@@ -1,0 +1,3 @@
+Generated using the built-in image generation tool. Saved asset: `public/logo.png`.
+
+Prompt: Create a single clean minimal logo icon for a contemporary social reading app named whatchureading. Icon only, absolutely no text or letters. A softly rounded open book whose pages form subtle wings, with one small four-point sparkle floating above the upper right page. Flat deep forest green (#203e35) silhouette, one warm chartreuse (#dce79b) small accent, bold simple shapes with a charming slightly organic geometry. Elegant editorial bookshop identity, readable at 32 pixels, no 3D, no gradient, no shadow, no mockup. Square composition, isolated on a genuinely transparent background, generous but not excessive padding.
