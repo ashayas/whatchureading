@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "whatchureading Goodreads bridge",
+  "version": "0.1.0",
+  "description": "Moves a user-authorized Goodreads library export to the open whatchureading import screen.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["https://www.goodreads.com/*", "https://whatchureading.com/*", "https://www.whatchureading.com/*"],
+  "background": { "service_worker": "service-worker.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.goodreads.com/review/import*"],
+      "js": ["goodreads.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://whatchureading.com/*", "https://www.whatchureading.com/*"],
+      "js": ["app-bridge.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": { "default_title": "whatchureading Goodreads bridge" }
+}
