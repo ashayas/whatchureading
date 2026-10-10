@@ -7,6 +7,8 @@ import {
   Check,
   ChevronRight,
   Compass,
+  ExternalLink,
+  FileSpreadsheet,
   Heart,
   Library,
   Loader2,
@@ -17,15 +19,32 @@ import {
   Sparkles,
   Star,
   Users,
+  Wind,
   X,
 } from "lucide-react";
-import type { Book, Bootstrap, LibraryItem, Shelf, Thought } from "./types";
+import type { Book, Bootstrap, FriendProfile, LibraryItem, Shelf, Thought } from "./types";
 import { api } from "./types";
 import { signOut } from "./auth";
 
-type Page = "feed" | "discover" | "library" | "profile";
+type Page = "feed" | "friends" | "discover" | "library" | "profile";
+type GoodreadsImportRecord = {
+  goodreads_book_id: string;
+  title: string;
+  author: string;
+  status: Shelf;
+  pages: number;
+  rating: number | null;
+  average_rating: number;
+  isbn: string;
+  review: string;
+  started_at: string;
+  finished_at: string;
+  description: string;
+  history: Record<string, unknown>;
+};
 const nav = [
   { id: "feed", name: "The feed", icon: BookOpen },
+  { id: "friends", name: "Friends", icon: Users },
   { id: "discover", name: "Discover", icon: Compass },
   { id: "library", name: "Your library", icon: Library },
   { id: "profile", name: "Your profile", icon: Users },
@@ -95,6 +114,24 @@ function Facepile() {
       <Avatar name="Sophie" color="lavender" small />
     </span>
   );
+}
+function importedComments(item: LibraryItem) {
+  try {
+    const history = JSON.parse(item.reading_history || "{}");
+    const comments = history.goodreads?.comments;
+    return Array.isArray(comments) ? comments : [];
+  } catch {
+    return [];
+  }
+}
+function importedTimeline(item: LibraryItem) {
+  try {
+    const history = JSON.parse(item.reading_history || "{}");
+    const events = history.goodreads?.reading_history;
+    return Array.isArray(events) ? events.filter((event) => typeof event?.text === "string").map((event) => event.text as string) : [];
+  } catch {
+    return [];
+  }
 }
 function Stars({
   value,
@@ -240,11 +277,14 @@ const demoActivities = [
 export default function App({ initialData }: { initialData: Bootstrap }) {
   const [data, setData] = useState<Bootstrap>(initialData);
   const [page, setPage] = useState<Page>(() =>
-    ["feed", "discover", "library", "profile"].includes(location.hash.slice(1))
+    ["feed", "friends", "discover", "library", "profile"].includes(location.hash.slice(1))
       ? (location.hash.slice(1) as Page)
       : "feed",
   );
   const [selected, setSelected] = useState<Book | null>(null),
+    [friendProfile, setFriendProfile] = useState<FriendProfile | null>(null),
+    [friendLoading, setFriendLoading] = useState(false),
+    [friendShelf, setFriendShelf] = useState<Shelf | "all">("all"),
     [searchOpen, setSearchOpen] = useState(false),
     [toast, setToast] = useState(""),
     [busy, setBusy] = useState(false);
@@ -254,7 +294,10 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     [swipeDir, setSwipeDir] = useState("");
   const [settings, setSettings] = useState(false),
     [name, setName] = useState(""),
-    [goal, setGoal] = useState(24);
+    [goal, setGoal] = useState(24),
+    [goodreadsImportOpen, setGoodreadsImportOpen] = useState(() =>
+      initialData.library.length === 0 && localStorage.getItem("wcr.goodreads-onboarding-seen") !== "1",
+    );
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   async function refresh() {
     const next = await api<Bootstrap>("bootstrap");
@@ -269,7 +312,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
   useEffect(() => {
     const change = () => {
       const h = location.hash.slice(1);
-      if (["feed", "discover", "library", "profile"].includes(h))
+      if (["feed", "friends", "discover", "library", "profile"].includes(h))
         setPage(h as Page);
     };
     addEventListener("hashchange", change);
@@ -279,6 +322,22 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     setPage(next);
     location.hash = next;
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  async function openFriend(friendId: string) {
+    setFriendLoading(true);
+    setFriendProfile(null);
+    setFriendShelf("all");
+    navigate("friends");
+    try {
+      setFriendProfile(await api<FriendProfile>(`friends/${encodeURIComponent(friendId)}`));
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setFriendLoading(false);
+    }
+  }
+  function friendName(value: string) {
+    return value ? value[0].toLocaleUpperCase() + value.slice(1) : "Reader";
   }
   function notify(msg: string) {
     setToast(msg);
@@ -307,7 +366,8 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
   const book = (id: string) => data.books.find((b) => b.id === id)!;
   const current = data.library.filter((l) => l.status === "reading"),
     finished = data.library.filter((l) => l.status === "read"),
-    wanted = data.library.filter((l) => l.status === "want");
+    wanted = data.library.filter((l) => l.status === "want"),
+    didNotFinish = data.library.filter((l) => l.status === "did-not-finish");
   const totalPages = data.library.reduce((sum, l) => sum + l.page, 0);
   const recommendations = data.recommendations.filter(
     (b) => genre === "All books" || b.genre === genre,
@@ -333,6 +393,9 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           </button>
         </h3>
         <p>{book(item.book_id).author}</p>
+        {item.started_at && (
+          <p className="reading-date">Started {item.started_at}</p>
+        )}
         <div className="progress-label">
           <span>
             Page {item.page} of {book(item.book_id).pages}
@@ -351,6 +414,19 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           onClick={() => setSelected(book(item.book_id))}
         >
           Update progress <ArrowRight size={14} />
+        </button>
+        <button
+          className="text-action dnf-action"
+          onClick={() =>
+            mutate(
+              "library",
+              "PUT",
+              { book_id: item.book_id, status: "did-not-finish", page: 0 },
+              "Moved to did not finish",
+            )
+          }
+        >
+          Mark did not finish
         </button>
       </div>
     </div>
@@ -383,6 +459,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
               <n.icon size={20} />
               <span>{n.name}</span>
               {n.id === "library" && <small>{data.library.length}</small>}
+              {n.id === "friends" && <small>{data.friends.length}</small>}
             </button>
           ))}
         </nav>
@@ -417,8 +494,9 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
       </aside>
       <div className="workspace">
         <header className="topbar">
-          <div className="breadcrumb">
-            Your little corner of the book world <span>✳</span>
+          <div className="topbar-promise" aria-label="About whatchureading">
+            <strong>Free. Open-source. Own your own chapter.</strong>
+            <span>No Amazon. No ads.</span>
           </div>
           <button className="search-box" onClick={() => setSearchOpen(true)}>
             <Search size={17} />
@@ -761,39 +839,24 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   </section>
                   <section className="friends-card">
                     <div className="section-heading">
-                      <h3>On their nightstand</h3>
-                      <span className="demo-pill">DEMO</span>
+                      <h3>Your friends</h3>
+                      <span>{data.friends.length}</span>
                     </div>
-                    {[
-                      {
-                        name: "Maya Chen",
-                        color: "peach",
-                        id: "tomorrow",
-                        p: 31,
-                      },
-                      {
-                        name: "Sophie Park",
-                        color: "lavender",
-                        id: "crawdads",
-                        p: 9,
-                      },
-                      { name: "Leo Martin", color: "sage", id: "dune", p: 62 },
-                    ]
-                      .filter((f) => data.books.some((b) => b.id === f.id))
-                      .map((f) => (
+                    {data.friends.map((friend, index) => (
                         <button
                           className="friend-row"
-                          key={f.name}
-                          onClick={() => setSelected(book(f.id))}
+                          key={friend.id}
+                          onClick={() => openFriend(friend.id)}
                         >
-                          <Avatar name={f.name} color={f.color} small />
+                          <Avatar name={friendName(friend.name)} color={["peach", "lavender", "sage"][index % 3]} small />
                           <span>
-                            <b>{f.name}</b>
-                            <small>{book(f.id).title}</small>
+                            <b>{friendName(friend.name)}</b>
+                            <small>{friend.book_title || "No book in progress"}</small>
                           </span>
-                          <span className="friend-percent">{f.p}%</span>
+                          {friend.book_id ? <span className="friend-percent">{friend.progress}%</span> : <ArrowRight size={14} />}
                         </button>
                       ))}
+                    {data.friends.length === 0 && <p className="empty-copy">Your reading circle will show up here.</p>}
                   </section>
                   <div className="quote-card">
                     <span>“</span>
@@ -802,6 +865,96 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   </div>
                 </aside>
               </div>
+            </>
+          )}
+
+          {page === "friends" && (
+            <>
+              {friendProfile ? (
+                <>
+                  <div className="page-heading friend-detail-heading">
+                    <div>
+                      <button className="text-action" onClick={() => setFriendProfile(null)}><ArrowLeft size={15} /> All friends</button>
+                      <span className="eyebrow">YOUR READING CIRCLE</span>
+                      <h1>{friendName(friendProfile.profile.name)}<span>.</span></h1>
+                      <p>{friendProfile.library.length} books · {friendProfile.notes.length} reading thoughts</p>
+                    </div>
+                    <Avatar name={friendName(friendProfile.profile.name)} />
+                  </div>
+                  <div className="friend-detail-columns">
+                    <section>
+                      <div className="section-heading"><h2>Their bookshelf</h2><span>{friendProfile.library.length} books</span></div>
+                      <div className="segmented friend-shelves">
+                        {(["all", "reading", "read", "want", "did-not-finish"] as const).map((status) => (
+                          <button key={status} className={friendShelf === status ? "active" : ""} onClick={() => setFriendShelf(status)}>
+                            {status === "all" ? "All" : status === "want" ? "Want to read" : status === "did-not-finish" ? "Did not finish" : status === "reading" ? "Reading" : "Read"}
+                            <small>{status === "all" ? friendProfile.library.length : friendProfile.library.filter((item) => item.status === status).length}</small>
+                          </button>
+                        ))}
+                      </div>
+                      <div className="friend-book-list">
+                        {friendProfile.library.filter((item) => friendShelf === "all" || item.status === friendShelf).map((item) => (
+                          <article className="friend-book-item" key={item.book_id}>
+                            <Cover book={{ id: item.book_id, title: item.title, author: item.author, genre: item.genre, pages: item.pages, rating: item.book_rating, isbn: item.isbn, color: item.color, friend_count: 0, description: item.description }} />
+                            <div>
+                              <span className="eyebrow">{item.status === "want" ? "WANT TO READ" : item.status === "did-not-finish" ? "DID NOT FINISH" : item.status.toUpperCase()}</span>
+                              <h3>{item.title}</h3><p>{item.author}</p>
+                              {item.status === "reading" && <small>Page {item.page} of {item.pages} · {Math.round((item.page / Math.max(item.pages, 1)) * 100)}% through</small>}
+                              {(item.started_at || item.finished_at) && <small>{item.started_at && `Started ${item.started_at}`}{item.started_at && item.finished_at && " · "}{item.finished_at && `Finished ${item.finished_at}`}</small>}
+                              {importedTimeline(item).length > 0 && <ul className="friend-timeline">{importedTimeline(item).map((event, index) => <li key={`${item.book_id}-event-${index}`}>{event}</li>)}</ul>}
+                              {item.rating && <Stars value={item.rating} />}
+                              {item.review && <p className="friend-review">{item.review}</p>}
+                              {importedComments(item).map((comment: { id?: string; author?: string; date?: string; body?: string }, index: number) => <p className="friend-comment" key={comment.id || index}><b>{comment.author || "Reader"}</b>{comment.date && ` · ${comment.date}`}<br />{comment.body}</p>)}
+                            </div>
+                          </article>
+                        ))}
+                        {friendProfile.library.filter((item) => friendShelf === "all" || item.status === friendShelf).length === 0 && <p className="friend-empty">No books on this shelf yet.</p>}
+                      </div>
+                    </section>
+                    <aside className="friend-thoughts">
+                      <div className="section-heading"><h2>Reading thoughts</h2><span>{friendProfile.notes.length}</span></div>
+                      {friendProfile.notes.length ? friendProfile.notes.map((note) => <article className="friend-thought" key={note.id}><b>{note.title}</b><small>Page {note.page}{note.spoiler ? " · Spoiler" : ""}</small><p>{note.body}</p><time>{new Date(note.created_at).toLocaleDateString()}</time></article>) : <p className="friend-empty">No reading thoughts yet.</p>}
+                    </aside>
+                  </div>
+                </>
+              ) : friendLoading ? (
+                <div className="page-heading"><h1>Loading your friend’s reading life…</h1></div>
+              ) : <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">YOUR READING CIRCLE</span>
+                  <h1>Your friends<span>.</span></h1>
+                  <p>See what your people are reading and share the next chapter.</p>
+                </div>
+                <span className="date-label">{data.friends.length} friends <Users size={17} /></span>
+              </div>
+              {data.friends.length === 0 ? (
+                <Empty title="Your circle starts here" text="When you connect with readers, they’ll show up here." action={() => navigate("discover")} label="Find a book" />
+              ) : (
+                <div className="friends-grid">
+                  {data.friends.map((friend, index) => {
+                    const friendBook = friend.book_id ? data.books.find((b) => b.id === friend.book_id) : undefined;
+                    return (
+                      <article className="friend-card" key={friend.id}>
+                        <button className="friend-card-heading friend-profile-link" onClick={() => openFriend(friend.id)}>
+                          <Avatar name={friendName(friend.name)} color={["peach", "lavender", "sage"][index % 3]} />
+                          <div><h2>{friendName(friend.name)}</h2><span>View reading life <ArrowRight size={13} /></span></div>
+                        </button>
+                        <span className="eyebrow">ON THEIR NIGHTSTAND</span>
+                        {friendBook ? (
+                          <button className="friend-reading" onClick={() => setSelected(friendBook)}>
+                            <Cover book={friendBook} />
+                            <span><b>{friendBook.title}</b><small>{friendBook.author}</small><span className="friend-progress"><i style={{ width: `${friend.progress}%` }} /> </span><small>{friend.progress}% through</small></span>
+                          </button>
+                        ) : (
+                          <p className="friend-empty">Nothing in progress right now.</p>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+              </>}
             </>
           )}
 
@@ -1046,6 +1199,11 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                     },
                     { id: "want", name: "Want to read", count: wanted.length },
                     { id: "read", name: "Finished", count: finished.length },
+                    {
+                      id: "did-not-finish",
+                      name: "Did not finish",
+                      count: didNotFinish.length,
+                    },
                   ] as const
                 ).map((s) => (
                   <button
@@ -1089,6 +1247,13 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                         <p>{book(l.book_id).author}</p>
                         {shelf === "read" ? (
                           <>
+                            {(l.started_at || l.finished_at) && (
+                              <p className="shelf-dates">
+                                {l.started_at && `Started ${l.started_at}`}
+                                {l.started_at && l.finished_at && " · "}
+                                {l.finished_at && `Finished ${l.finished_at}`}
+                              </p>
+                            )}
                             <Stars value={l.rating || 0} />
                             <button
                               className="text-action"
@@ -1099,26 +1264,46 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                                 : "Leave a verdict"}{" "}
                               <ArrowRight size={14} />
                             </button>
+                            {importedComments(l).length > 0 && (
+                              <div className="shelf-comments">
+                                <span className="eyebrow">GOODREADS COMMENTS</span>
+                                {importedComments(l).map((comment: { id?: string; author?: string; date?: string; body?: string }, index: number) => (
+                                  <p key={comment.id || index}>
+                                    <b>{comment.author || "Reader"}</b>
+                                    {comment.date && <small> · {comment.date}</small>}
+                                    <br />
+                                    {comment.body}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
                           </>
                         ) : (
-                          <button
-                            className="outline"
-                            disabled={busy}
-                            onClick={() =>
-                              mutate(
-                                "library",
-                                "PUT",
-                                {
-                                  book_id: l.book_id,
-                                  status: "reading",
-                                  page: 0,
-                                },
-                                "Your next chapter starts now",
-                              )
-                            }
-                          >
-                            Start reading <ArrowRight size={14} />
-                          </button>
+                          <>
+                            {shelf === "did-not-finish" && l.started_at && (
+                              <p className="shelf-dates">
+                                Started {l.started_at}
+                              </p>
+                            )}
+                            <button
+                              className="outline"
+                              disabled={busy}
+                              onClick={() =>
+                                mutate(
+                                  "library",
+                                  "PUT",
+                                  {
+                                    book_id: l.book_id,
+                                    status: "reading",
+                                    page: 0,
+                                  },
+                                  "Your next chapter starts now",
+                                )
+                              }
+                            >
+                              Start reading <ArrowRight size={14} />
+                            </button>
+                          </>
                         )}
                       </article>
                     ))}
@@ -1127,12 +1312,16 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                       title={
                         shelf === "want"
                           ? "Make room for possibility"
-                          : "The first of many"
+                          : shelf === "did-not-finish"
+                            ? "Every book is a choice"
+                            : "The first of many"
                       }
                       text={
                         shelf === "want"
                           ? "Save a few books for a future you."
-                          : "Your finished books will live here."
+                          : shelf === "did-not-finish"
+                            ? "Some stories aren't yours right now."
+                            : "Your finished books will live here."
                       }
                       action={() => navigate("discover")}
                       label="Discover books"
@@ -1162,6 +1351,9 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   }}
                 >
                   <Settings2 size={16} /> Edit profile
+                </button>
+                <button className="primary" onClick={() => setGoodreadsImportOpen(true)}>
+                  <FileSpreadsheet size={16} /> Bring in Goodreads
                 </button>
               </div>
               <section className="profile-banner">
@@ -1399,6 +1591,16 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           </button>
         </Modal>
       )}
+      {goodreadsImportOpen && (
+        <GoodreadsImportModal
+          close={() => {
+            localStorage.setItem("wcr.goodreads-onboarding-seen", "1");
+            setGoodreadsImportOpen(false);
+          }}
+          refresh={refresh}
+          notify={notify}
+        />
+      )}
       {toast && (
         <div className="toast" role="status">
           <Check size={17} />
@@ -1473,6 +1675,156 @@ function Modal({
         {children}
       </div>
     </dialog>
+  );
+}
+function csvRows(source: string) {
+  const rows: string[][] = [];
+  let row: string[] = [], field = "", quoted = false;
+  const text = source.replace(/^\uFEFF/, "");
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"' && text[i + 1] === '"') { field += '"'; i += 1; }
+      else if (char === '"') quoted = false;
+      else field += char;
+    } else if (char === '"') quoted = true;
+    else if (char === ",") { row.push(field); field = ""; }
+    else if (char === "\n") { row.push(field.replace(/\r$/, "")); rows.push(row); row = []; field = ""; }
+    else field += char;
+  }
+  if (quoted) throw new Error("This CSV has an unfinished quoted field.");
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((entry) => entry.some((value) => value.trim()));
+}
+function parseGoodreadsDate(value: string) {
+  const match = value.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  return match ? `${match[3]}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}` : "";
+}
+function csvNumber(value: string) {
+  const match = value.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+}
+function GoodreadsImportModal({
+  close,
+  refresh,
+  notify,
+}: {
+  close: () => void;
+  refresh: () => Promise<Bootstrap>;
+  notify: (message: string) => void;
+}) {
+  const [records, setRecords] = useState<GoodreadsImportRecord[]>([]);
+  const [fileName, setFileName] = useState("");
+  const [error, setError] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [complete, setComplete] = useState(false);
+  const [bridgeStatus, setBridgeStatus] = useState("");
+  const [importId] = useState(() => crypto.randomUUID());
+  useEffect(() => {
+    const receive = (event: MessageEvent) => {
+      const message = event.data;
+      if (message?.source !== "wcr-goodreads-bridge" || message.importId !== importId) return;
+      if (message.type === "WCR_GOODREADS_PROGRESS") setBridgeStatus(String(message.status || "Working through Goodreads…"));
+      if (message.type === "WCR_GOODREADS_DATA" && typeof message.csv === "string") {
+        setBridgeStatus("Your export is ready. Review the books below before importing.");
+        void chooseFile(new File([message.csv], "goodreads_export.csv", { type: "text/csv" }));
+      }
+    };
+    addEventListener("message", receive);
+    return () => removeEventListener("message", receive);
+  }, [importId]);
+  const connectGoodreads = () => {
+    setBridgeStatus("Opening Goodreads in a new tab…");
+    window.postMessage({ type: "WCR_GOODREADS_START", importId }, "*");
+    window.open("https://www.goodreads.com/review/import", "_blank", "noopener,noreferrer");
+  };
+  const chooseFile = async (file?: File) => {
+    if (!file) return;
+    setError("");
+    try {
+      const rows = csvRows(await file.text());
+      if (rows.length < 2) throw new Error("That file does not contain a Goodreads library.");
+      const headers = rows[0].map((value) => value.trim());
+      for (const required of ["Book Id", "Title", "Author"]) {
+        if (!headers.includes(required)) throw new Error(`This export is missing the “${required}” column.`);
+      }
+      const values = rows.slice(1).map((entry) => Object.fromEntries(headers.map((header, index) => [header, entry[index] || ""])));
+      const parsed = values.map((row, index) => {
+        const id = String(row["Book Id"] || "").trim();
+        const title = String(row.Title || "").trim();
+        if (!/^\d+$/.test(id) || !title) throw new Error(`Row ${index + 2} is missing a Goodreads book ID or title.`);
+        const shelves = String(row.Bookshelves || "").toLowerCase().split(",").map((s) => s.trim());
+        const finished = parseGoodreadsDate(String(row["Date Read"] || ""));
+        const status: Shelf = finished || csvNumber(String(row["Read Count"] || "")) > 0 ? "read" : shelves.includes("currently-reading") || shelves.includes("currently reading") ? "reading" : shelves.includes("did-not-finish") || shelves.includes("dnf") ? "did-not-finish" : "want";
+        const pages = Math.max(1, Math.min(20000, Math.round(csvNumber(String(row["Number of Pages"] || "")) || 300)));
+        const isbn = String(row.ISBN13 || row.ISBN || "").replace(/\D/g, "");
+        const added = parseGoodreadsDate(String(row["Date Added"] || ""));
+        return {
+          goodreads_book_id: id,
+          title: title.slice(0, 250),
+          author: String(row.Author || "").trim().slice(0, 150),
+          status,
+          pages,
+          rating: csvNumber(String(row["My Rating"] || "")) || null,
+          average_rating: Math.max(0, Math.min(5, csvNumber(String(row["Average Rating"] || "")))),
+          isbn,
+          review: String(row["My Review"] || "").slice(0, 5000),
+          started_at: "",
+          finished_at: finished,
+          description: "",
+          history: { source: "goodreads-csv", date_added: added, date_read: finished, shelves, read_count: String(row["Read Count"] || "") },
+        };
+      });
+      if (!parsed.length || parsed.length > 2000) throw new Error("Choose an export containing between 1 and 2,000 books.");
+      if (new Set(parsed.map((record) => record.goodreads_book_id)).size !== parsed.length) throw new Error("This export contains duplicate Goodreads book IDs.");
+      setFileName(file.name);
+      setRecords(parsed);
+    } catch (e) {
+      setRecords([]);
+      setFileName("");
+      setError((e as Error).message);
+    }
+  };
+  const submit = async () => {
+    setImporting(true);
+    try {
+      await api("import/goodreads", "POST", { records });
+      await refresh();
+      setComplete(true);
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  };
+  const counts = records.reduce<Record<string, number>>((all, record) => ({ ...all, [record.status]: (all[record.status] || 0) + 1 }), {});
+  return (
+    <Modal close={close} wide>
+      {!complete ? (
+        <>
+          <span className="eyebrow">A LITTLE HELP FROM YOUR OLD BOOKSHELF</span>
+          <h2>Bring your Goodreads library home.</h2>
+          <p className="import-lede">Your Goodreads login stays with Goodreads. We only need the library file you choose to share.</p>
+          <div className="goodreads-steps">
+            <div className="goodreads-step"><span>1</span><div><b>Connect Goodreads</b><small>We’ll open Goodreads so you can sign in there. Your password stays with Goodreads.</small></div><button className="outline" onClick={connectGoodreads}>Open Goodreads <ExternalLink size={14} /></button></div>
+            <div className="goodreads-step"><span>2</span><div><b>Export your library</b><small>Choose Export Library, then wait for the CSV link to appear.</small></div></div>
+            <div className="goodreads-step"><span>3</span><div><b>Drop the CSV here</b><small>We preview everything before anything is added.</small></div></div>
+          </div>
+          {bridgeStatus && <p className="import-bridge-status" role="status"><Wind size={14} /> {bridgeStatus}</p>}
+          <label className="goodreads-dropzone">
+            <FileSpreadsheet size={28} />
+            <b>{fileName || "Choose your Goodreads CSV"}</b>
+            <span>{fileName ? "Ready to preview" : "CSV files only · nothing uploads until you confirm"}</span>
+            <input type="file" accept=".csv,text/csv" onChange={(e) => void chooseFile(e.target.files?.[0])} />
+          </label>
+          {error && <p className="import-error" role="alert">{error}</p>}
+          {records.length > 0 && <div className="import-preview"><b>{records.length} books ready</b><span>{counts.read || 0} read · {counts.reading || 0} reading · {counts.want || 0} to read{counts["did-not-finish"] ? ` · ${counts["did-not-finish"]} did not finish` : ""}</span></div>}
+          <div className="modal-actions"><button className="outline" onClick={close}>Cancel</button><button className="primary" disabled={!records.length || importing} onClick={() => void submit()}>{importing ? <><Loader2 className="spin" size={16} /> Bringing them in…</> : <>Import my books <ArrowRight size={16} /></>}</button></div>
+        </>
+      ) : (
+        <div className="import-complete"><span className="import-check"><Check size={26} /></span><span className="eyebrow">YOUR SHELVES ARE HERE</span><h2>Welcome back, books.</h2><p>{records.length} books are now part of your reading life. You can update any shelf whenever you like.</p><button className="primary" onClick={close}>See my library <ArrowRight size={16} /></button></div>
+      )}
+    </Modal>
   );
 }
 function BookModal({
