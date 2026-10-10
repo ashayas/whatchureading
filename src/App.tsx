@@ -20,7 +20,7 @@ import {
   X,
 } from "lucide-react";
 import type { Book, Bootstrap, LibraryItem, Shelf, Thought } from "./types";
-import { api } from "./types";
+import { api, RATING_THRESHOLD } from "./types";
 import { signOut } from "./auth";
 
 type Page = "feed" | "discover" | "library" | "profile";
@@ -96,33 +96,110 @@ function Facepile() {
     </span>
   );
 }
-function Stars({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange?: (n: number) => void;
-}) {
+function Stars({ value }: { value: number }) {
   return (
-    <span className={"stars " + (onChange ? "editable" : "")}>
-      {[1, 2, 3, 4, 5].map((n) =>
-        onChange ? (
-          <button
-            key={n}
-            aria-label={`Rate ${n} star${n > 1 ? "s" : ""}`}
-            onClick={() => onChange(n)}
-          >
-            <Star fill={n <= value ? "currentColor" : "none"} />
-          </button>
-        ) : (
-          <Star
-            key={n}
-            size={13}
-            fill={n <= Math.round(value) ? "currentColor" : "none"}
-          />
-        ),
-      )}
+    <span className="stars">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <Star
+          key={n}
+          size={13}
+          fill={n <= Math.round(value) ? "currentColor" : "none"}
+        />
+      ))}
     </span>
+  );
+}
+// A reader's personal rating is relative: it comes from ranking finished books
+// against each other, not from picking a number directly.
+function RatingDisplay({ item }: { item: LibraryItem }) {
+  if (item.normalized_rating != null) {
+    return (
+      <span className="rank-score-inline">
+        <Stars value={item.normalized_rating} />
+        <small>{item.normalized_rating.toFixed(1)} / 5</small>
+      </span>
+    );
+  }
+  const remaining = Math.max(0, RATING_THRESHOLD - item.ranked_total);
+  return (
+    <span className="rating-pending">
+      {item.rank_position != null
+        ? `Rate ${remaining} more book${remaining === 1 ? "" : "s"} to unlock your rating`
+        : "Compare it to rank it"}
+    </span>
+  );
+}
+function RelativeRating({
+  book,
+  ranked,
+  busy,
+  onDone,
+}: {
+  book: Book;
+  ranked: { book: Book; rank_position: number }[];
+  busy: boolean;
+  onDone: (rankPosition: number) => void;
+}) {
+  const [lo, setLo] = useState(0);
+  const [hi, setHi] = useState(ranked.length);
+  if (!ranked.length) {
+    return (
+      <div className="relative-rating">
+        <h3>Your first finished book.</h3>
+        <p>
+          There's nothing to compare <b>{book.title}</b> to yet. Finish a few
+          more and you'll start ranking them against each other.
+        </p>
+        <button className="primary" disabled={busy} onClick={() => onDone(0)}>
+          Save to your ranking <Check size={16} />
+        </button>
+      </div>
+    );
+  }
+  if (lo >= hi) {
+    return (
+      <div className="relative-rating">
+        <h3>Got it.</h3>
+        <p>
+          <b>{book.title}</b> is ranked against the rest of your finished books.
+          Keep reading to unlock your rating out of 5.
+        </p>
+        <button className="primary" disabled={busy} onClick={() => onDone(lo)}>
+          Confirm ranking <Check size={16} />
+        </button>
+      </div>
+    );
+  }
+  const mid = Math.floor((lo + hi) / 2);
+  const against = ranked[mid].book;
+  return (
+    <div className="relative-rating">
+      <span className="eyebrow">RANKING THIS BOOK</span>
+      <h3>Did you like it more than this one?</h3>
+      <div className="relative-rating-pair">
+        <div>
+          <Cover book={book} />
+          <p>{book.title}</p>
+        </div>
+        <span>vs</span>
+        <div>
+          <Cover book={against} />
+          <p>{against.title}</p>
+        </div>
+      </div>
+      <div className="relative-rating-actions">
+        <button
+          className="outline"
+          disabled={busy}
+          onClick={() => setLo(mid + 1)}
+        >
+          Liked {against.title} more
+        </button>
+        <button className="primary" disabled={busy} onClick={() => setHi(mid)}>
+          Liked {book.title} more
+        </button>
+      </div>
+    </div>
   );
 }
 function Radar({
@@ -700,7 +777,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                                 YOUR FINAL VERDICT
                               </span>
                               <h3>{book(l.book_id).title}</h3>
-                              <Stars value={l.rating || 0} />
+                              <RatingDisplay item={l} />
                               <p>{l.review}</p>
                             </article>
                           ))}
@@ -1089,7 +1166,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                         <p>{book(l.book_id).author}</p>
                         {shelf === "read" ? (
                           <>
-                            <Stars value={l.rating || 0} />
+                            <RatingDisplay item={l} />
                             <button
                               className="text-action"
                               onClick={() => setSelected(book(l.book_id))}
@@ -1331,6 +1408,8 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           book={selected}
           item={data.library.find((l) => l.book_id === selected.id)}
           notes={data.notes.filter((n) => n.book_id === selected.id)}
+          library={data.library}
+          findBook={book}
           close={() => setSelected(null)}
           mutate={mutate}
           busy={busy}
@@ -1479,6 +1558,8 @@ function BookModal({
   book,
   item,
   notes,
+  library,
+  findBook,
   close,
   mutate,
   busy,
@@ -1486,6 +1567,8 @@ function BookModal({
   book: Book;
   item?: LibraryItem;
   notes: Thought[];
+  library: LibraryItem[];
+  findBook: (id: string) => Book;
   close: () => void;
   mutate: (
     path: string,
@@ -1499,16 +1582,26 @@ function BookModal({
     [page, setPage] = useState(item?.page || 0),
     [body, setBody] = useState(""),
     [spoiler, setSpoiler] = useState(false),
-    [rating, setRating] = useState(item?.rating || 0),
     [review, setReview] = useState(item?.review || ""),
+    [reranking, setReranking] = useState(false),
     [revealed, setRevealed] = useState<string[]>([]);
   const [status, setStatus] = useState<Shelf>(item?.status || "want");
+  const ranked = library
+    .filter(
+      (l) =>
+        l.status === "read" && l.rank_position != null && l.book_id !== book.id,
+    )
+    .sort((a, b) => (a.rank_position as number) - (b.rank_position as number))
+    .map((l) => ({
+      book: findBook(l.book_id),
+      rank_position: l.rank_position as number,
+    }));
   const save = async () => {
     if (
       await mutate(
         "library",
         "PUT",
-        { book_id: book.id, status, page, rating: rating || null, review },
+        { book_id: book.id, status, page, review },
         "Your shelf is up to date",
       )
     )
@@ -1636,7 +1729,6 @@ function BookModal({
                     book_id: book.id,
                     status: page === book.pages ? "read" : "reading",
                     page,
-                    rating: rating || null,
                     review,
                   },
                   page === book.pages
@@ -1727,45 +1819,80 @@ function BookModal({
         </div>
       )}
       {tab === "Final verdict" && (
-        <form
-          className="verdict-form"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            if (
-              await mutate(
-                "library",
-                "PUT",
-                {
-                  book_id: book.id,
-                  status: "read",
-                  page: book.pages,
-                  rating: rating || null,
-                  review,
-                },
-                "Your final verdict is on the shelf",
-              )
-            ) {
-              setStatus("read");
-              setPage(book.pages);
-            }
-          }}
-        >
-          <h3>How did this one leave you?</h3>
-          <p>Some stories stay. Give this one its last word.</p>
-          <Stars value={rating} onChange={setRating} />
-          <label>
-            Your final verdict
-            <textarea
-              placeholder="What will you remember about this book?"
-              maxLength={5000}
-              value={review}
-              onChange={(e) => setReview(e.target.value)}
+        <div className="verdict-panel">
+          <form
+            className="verdict-form"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (
+                await mutate(
+                  "library",
+                  "PUT",
+                  {
+                    book_id: book.id,
+                    status: "read",
+                    page: book.pages,
+                    review,
+                  },
+                  "Your final verdict is on the shelf",
+                )
+              ) {
+                setStatus("read");
+                setPage(book.pages);
+              }
+            }}
+          >
+            <h3>How did this one leave you?</h3>
+            <p>Some stories stay. Give this one its last word.</p>
+            <label>
+              Your final verdict
+              <textarea
+                placeholder="What will you remember about this book?"
+                maxLength={5000}
+                value={review}
+                onChange={(e) => setReview(e.target.value)}
+              />
+            </label>
+            <button className="primary" disabled={busy}>
+              Finish & save verdict <Check size={16} />
+            </button>
+          </form>
+          {status === "read" && (item?.rank_position == null || reranking) && (
+            <RelativeRating
+              key={reranking ? "rerank" : "rank"}
+              book={book}
+              ranked={ranked}
+              busy={busy}
+              onDone={async (rankPosition) => {
+                if (
+                  await mutate(
+                    "library/rank",
+                    "PUT",
+                    { book_id: book.id, rank_position: rankPosition },
+                    "Your ranking is updated",
+                  )
+                )
+                  setReranking(false);
+              }}
             />
-          </label>
-          <button className="primary" disabled={busy}>
-            Finish & save verdict <Check size={16} />
-          </button>
-        </form>
+          )}
+          {status === "read" && item?.rank_position != null && !reranking && (
+            <div className="rank-summary">
+              <span className="eyebrow">YOUR RANKING</span>
+              <p>
+                #{item.rank_position + 1} of {item.ranked_total} finished books
+                you've ranked
+              </p>
+              <RatingDisplay item={item} />
+              <button
+                className="text-action"
+                onClick={() => setReranking(true)}
+              >
+                Compare it again <ArrowRight size={14} />
+              </button>
+            </div>
+          )}
+        </div>
       )}
       {item && (
         <button

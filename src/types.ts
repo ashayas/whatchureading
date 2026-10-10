@@ -14,11 +14,16 @@ export interface Book {
   match_score?: number;
   reason?: string;
 }
+// Must match RATING_THRESHOLD in worker/lib.rs: how many books a reader must
+// rank before a normalized out-of-5 rating is derived and shown.
+export const RATING_THRESHOLD = 5;
 export interface LibraryItem {
   book_id: string;
   status: Shelf;
   page: number;
-  rating: number | null;
+  rank_position: number | null;
+  normalized_rating: number | null;
+  ranked_total: number;
   review: string;
   updated_at: string;
   finished_at: string | null;
