@@ -20,15 +20,9 @@ if (!input || !goodreadsId || !supabaseId || !readerId) {
   );
 }
 
-const expectedAccount = "REDACTED-CF-ACCOUNT-ID";
-const expectedDatabase = "REDACTED-CF-D1-DATABASE-ID";
-const config = checkedConfig();
-if (
-  config.account_id !== expectedAccount ||
-  config.d1_databases?.[0]?.database_id !== expectedDatabase
-) {
-  throw new Error("Refusing import: Wrangler is not pointed at the approved D1 target.");
-}
+// checkedConfig() already refuses to run unless wrangler.jsonc matches the
+// account/database configured in the ignored .env file.
+checkedConfig();
 if (!/^\d+$/.test(goodreadsId) || !/^[\da-f-]{36}$/i.test(supabaseId) || !/^[\da-f-]{36}$/i.test(readerId)) {
   throw new Error("Invalid Goodreads user ID or app identity.");
 }
