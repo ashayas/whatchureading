@@ -20,7 +20,8 @@
     "format": "prettier --write src scripts vite.config.ts",
     "setup": "node scripts/setup.mjs",
     "selfhost": "node scripts/selfhost-entry.mjs",
-    "check:public": "node scripts/check-public.mjs"
+    "check:public": "node scripts/check-public.mjs",
+    "sync:openlibrary": "node scripts/openlibrary-sync.mjs"
   },
   "dependencies": {
     "@supabase/auth-js": "^2.117.3",

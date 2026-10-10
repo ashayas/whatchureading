@@ -7,8 +7,14 @@ const files = execFileSync("git", ["ls-files", "--cached", "-z"])
   .filter(Boolean);
 const forbiddenPath =
   /(^|\/)(?:\.env(?:\..*)?|\.dev\.vars(?:\..*)?|wrangler\.jsonc|worker-configuration\.d\.ts|AGENTS\.md|__pycache__)(?:\/|$)|^(?:artifacts|data|imports|captures|uploads|\.agent-grid|\.wrangler|dist|build|target|node_modules)\/|\.(?:sqlite.*|db(?:-.*)?|dump|csv|tsv|har|mov|mp4|pem|key|pyc)$/i;
+// Placeholder hostnames used in docs/examples, never a real project ref.
+const supabasePlaceholders = /^(?:your|example|my)-?project$/i;
 const patterns = [
-  ["Supabase project URL", /https?:\/\/[a-z0-9.-]+\.supabase\.(?:co|net)\b/i],
+  [
+    "Supabase project URL",
+    /https?:\/\/([a-z0-9.-]+)\.supabase\.(?:co|net)\b/i,
+    (match) => !supabasePlaceholders.test(match[1]),
+  ],
   ["Supabase key", /\b(?:sbp_|sb_secret_|sb_publishable_)[A-Za-z0-9_-]{20,}\b/],
   [
     "JWT credential",
@@ -19,7 +25,7 @@ const patterns = [
     /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})\b/,
   ],
   ["private key", /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
-];
+].map(([label, regex, extra]) => [label, regex, extra || (() => true)]);
 const privateValues = [
   "SUPABASE_URL",
   "SUPABASE_PUBLISHABLE_KEY",
@@ -47,18 +53,23 @@ for (const file of files) {
   }
   const bytes = execFileSync("git", ["show", `:${file}`]);
   const text = bytes.toString();
-  for (const [label, regex] of patterns)
-    if (regex.test(text)) {
+  for (const [label, regex, isReal] of patterns) {
+    const match = regex.exec(text);
+    if (match && isReal(match)) {
       console.error(`${label} in ${file}`);
       problems++;
     }
+  }
   if (privateValues.some((value) => bytes.includes(Buffer.from(value)))) {
     console.error(`Private environment value in ${file}`);
     problems++;
   }
+  // INSERT...SELECT (a schema-migration table rebuild copying existing rows
+  // by query) carries no literal data; only INSERT...VALUES or COPY...FROM do.
   if (
     file.endsWith(".sql") &&
-    /\b(?:INSERT\s+INTO|COPY\s+\w+\s+FROM)\b/i.test(text)
+    (/\bINSERT\s+INTO\s+\S+[\s\S]*?\bVALUES\s*\(/i.test(text) ||
+      /\bCOPY\s+\w+\s+FROM\b/i.test(text))
   ) {
     console.error(`Data-bearing SQL in ${file}`);
     problems++;

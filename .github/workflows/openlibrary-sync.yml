@@ -1,0 +1,29 @@
+name: Open Library sync
+
+on:
+  schedule:
+    # 07:00 UTC on the 1st of every month, matching Open Library's own
+    # monthly dump cadence. Runs unattended; no manual trigger needed.
+    - cron: "0 7 1 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node scripts/openlibrary-sync.mjs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          OPENLIBRARY_D1_DATABASE: whatchureading-openlibrary
+          OPENLIBRARY_R2_BUCKET: whatchureading-openlibrary-sync
