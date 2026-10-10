@@ -1704,6 +1704,27 @@ function csvNumber(value: string) {
   const match = value.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : 0;
 }
+function GoodreadsImportAnimation({ status }: { status: string }) {
+  const books = [
+    ["The Atlas of", "Clouds", "#d8e6c2"],
+    ["A Brief", "History", "#e6d6be"],
+    ["The Secret", "Garden", "#c9dce0"],
+    ["Tomorrow,", "and Tomorrow", "#ded0e4"],
+    ["The Long", "Way Home", "#e4cfc5"],
+  ];
+  return (
+    <div className="goodreads-import-animation" role="status" aria-live="polite">
+      <div className="import-books" aria-hidden="true">
+        {books.map(([first, second, color], index) => (
+          <div className="import-book" key={first} style={{ background: color, animationDelay: `${index * 0.42}s` }}>
+            <span>{first}</span><b>{second}</b><i />
+          </div>
+        ))}
+      </div>
+      <div><b>Bringing your shelves home</b><span>{status}</span></div>
+    </div>
+  );
+}
 function GoodreadsImportModal({
   close,
   refresh,
@@ -1819,6 +1840,7 @@ function GoodreadsImportModal({
             <div className="goodreads-step"><span>3</span><div><b>{bridgeAvailable ? "Review and import" : "Drop the CSV here"}</b><small>{bridgeAvailable ? "We’ll preview everything and add only books you haven’t imported yet." : "We preview everything before anything is added."}</small></div></div>
           </div>
           {bridgeStatus && <p className="import-bridge-status" role="status"><Wind size={14} /> {bridgeStatus}</p>}
+          {bridgeAvailable && bridgeStatus && !records.length && <GoodreadsImportAnimation status={bridgeStatus} />}
           <label className="goodreads-dropzone">
             <FileSpreadsheet size={28} />
             <b>{fileName || "Choose your Goodreads CSV"}</b>

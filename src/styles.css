@@ -1823,6 +1823,17 @@ select {
 .import-preview span { color: var(--muted); text-align: right; }
 .import-error { color: #a9493d !important; }
 .import-bridge-status { display: flex; align-items: center; gap: 7px; padding: 9px 12px; margin: 12px 0 0; border-radius: 7px; background: #f1f3e8; color: var(--green) !important; font-size: 12px !important; }
+.goodreads-import-animation { display: flex; align-items: center; gap: 18px; min-height: 112px; margin: 14px 0 2px; padding: 12px 18px; border-radius: 12px; background: linear-gradient(110deg, #edf2e4, #f8f6eb 55%, #e9f0e1); overflow: hidden; }
+.goodreads-import-animation > div:last-child { display: grid; gap: 4px; }
+.goodreads-import-animation > div:last-child b { color: var(--green); font-size: 14px; }
+.goodreads-import-animation > div:last-child span { max-width: 390px; color: var(--muted); font-size: 11px; }
+.import-books { position: relative; width: 138px; height: 88px; flex: 0 0 138px; perspective: 700px; }
+.import-book { position: absolute; top: 8px; left: 36px; display: grid; align-content: center; gap: 2px; width: 58px; height: 76px; padding: 8px; border-radius: 3px 7px 7px 3px; color: #315044; box-shadow: 4px 7px 12px #31504422; transform-origin: left center; animation: import-book-flip 2.4s ease-in-out infinite; }
+.import-book span, .import-book b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 7px; line-height: 1.1; }
+.import-book b { font-family: Georgia, serif; font-size: 10px; }
+.import-book i { display: block; width: 25px; height: 2px; margin-top: 4px; border-radius: 2px; background: #31504466; }
+@keyframes import-book-flip { 0%, 16% { opacity: 0; transform: translateX(26px) rotateY(-90deg) rotateZ(4deg); } 28%, 66% { opacity: 1; transform: translateX(0) rotateY(0) rotateZ(0); } 82%, 100% { opacity: 0; transform: translateX(-32px) rotateY(88deg) rotateZ(-5deg); } }
+@media (prefers-reduced-motion: reduce) { .import-book { animation: none; opacity: 1; transform: none; } .import-book:nth-child(n+2) { display: none; } }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .import-complete { display: grid; justify-items: center; text-align: center; padding: 24px 8px 12px; }
 .import-complete p { max-width: 420px; }
