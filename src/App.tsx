@@ -77,7 +77,7 @@ function Cover({
 }) {
   const [failed, setFailed] = useState(false);
   const src = book.isbn?.startsWith("cover:")
-    ? `https://covers.openlibrary.org/b/id/${book.isbn.slice(6)}-L.jpg`
+    ? `/api/v1/covers/${book.isbn.slice(6)}`
     : `/covers/${book.id}.jpg`;
   return (
     <button

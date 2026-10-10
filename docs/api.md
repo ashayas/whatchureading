@@ -2,7 +2,7 @@
 
 Base path: `/api/v1`. JSON request/response bodies. Errors: `{ "error": "human-readable message" }`.
 
-Except `/health` and `/auth/config`, every endpoint requires `Authorization: Bearer <Supabase access_token>`. Web and mobile sign in through Supabase Auth, refresh sessions with its auth SDK, and send access tokens to the same Rust API. Tokens are verified against the configured Supabase project's `/auth/v1/user`; D1 reader IDs are resolved from the verified auth subject. `reader_id` returned by bootstrap is an application identifier, never an authentication credential. Old `X-Reader-Id` headers and demo cookies are ignored. Missing, forged and expired sessions return 401; unavailable authentication returns 503. Browser mutations require same-origin requests; native HTTP clients do not need CORS.
+Except `/health`, `/auth/config`, and `/covers/:cover_id`, every endpoint requires `Authorization: Bearer <Supabase access_token>`. Web and mobile sign in through Supabase Auth, refresh sessions with its auth SDK, and send access tokens to the same Rust API. Tokens are verified against the configured Supabase project's `/auth/v1/user`; D1 reader IDs are resolved from the verified auth subject. `reader_id` returned by bootstrap is an application identifier, never an authentication credential. Old `X-Reader-Id` headers and demo cookies are ignored. Missing, forged and expired sessions return 401; unavailable authentication returns 503. Browser mutations require same-origin requests; native HTTP clients do not need CORS.
 
 D1 exclusively stores application users/metadata and reading data. Supabase stores only required auth identities and sessions. No app-level fields are written to Supabase `user_metadata`. New accounts have empty shelves. `readers.supabase_user_id` is a unique subject-to-reader mapping; all private queries use the internal D1 reader ID.
 
@@ -24,6 +24,7 @@ D1 exclusively stores application users/metadata and reading data. Supabase stor
 | PUT | `/profile` | `{name,goal}`. Name 1–60 chars; goal 1–500. |
 | POST | `/likes` | `{activity_id:"maya"\|"james"\|"sophie"\|"leo",liked:boolean}` |
 | GET | `/search?q=...` | Open Library search (2–150 chars), up to 12 results. |
+| GET | `/covers/:cover_id` | Proxies an Open Library cover image through this Worker's edge cache (no auth; `cover_id` must be digits only). Caches both hits and misses so repeat requests for the same cover never re-hit Open Library. |
 | POST | `/books/import` | `{key:"/works/OL...W",title,author,pages,cover_id}`. Imports metadata; returns `{id}`. |
 | POST | `/import/goodreads` | `{records:[{goodreads_book_id,title,author,status,pages,rating,average_rating,isbn,review,started_at,finished_at,history}]}`. Imports a user-selected Goodreads CSV preview into the authenticated reader; accepts up to 2,000 records and is idempotent for existing reader-book rows. |
 

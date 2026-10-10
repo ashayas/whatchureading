@@ -26,12 +26,54 @@ fn num(n: i64) -> wasm_bindgen::JsValue {
 fn real(n: f64) -> wasm_bindgen::JsValue {
     n.into()
 }
+// Covers are proxied through this Worker (instead of the browser hitting
+// Open Library's CDN directly) so Cloudflare's edge Cache API can serve
+// repeat requests for the same cover without a fresh upstream fetch. Public,
+// no auth: it's the same image Open Library already serves to anyone.
+async fn cover(req: &Request, cover_id: &str) -> Result<Response> {
+    if cover_id.is_empty() || cover_id.len() > 20 || !cover_id.bytes().all(|c| c.is_ascii_digit()) {
+        return bad("Invalid cover id");
+    }
+    let cache = Cache::default();
+    if let Some(cached) = cache.get(req, false).await? {
+        return Ok(cached);
+    }
+    let headers = Headers::new();
+    headers.set("User-Agent", "whatchureading.com/0.1 (cover proxy)")?;
+    let mut upstream = Fetch::Request(Request::new_with_init(
+        &format!("https://covers.openlibrary.org/b/id/{cover_id}-L.jpg"),
+        RequestInit::new().with_headers(headers),
+    )?)
+    .send()
+    .await?;
+    let mut res = if upstream.status_code() == 200 {
+        let bytes = upstream.bytes().await?;
+        let mut r = Response::from_bytes(bytes)?;
+        r.headers_mut().set("Content-Type", "image/jpeg")?;
+        r.headers_mut()
+            .set("Cache-Control", "public, max-age=2592000")?;
+        r
+    } else {
+        // Cache the miss too, briefly, so a broken/unknown cover id doesn't
+        // get re-fetched from Open Library on every page view.
+        let mut r = Response::empty()?.with_status(404);
+        r.headers_mut().set("Cache-Control", "public, max-age=600")?;
+        r
+    };
+    cache.put(req, res.cloned()?).await?;
+    Ok(res)
+}
 // Never accept browser-supplied reader IDs. Supabase verifies the bearer token;
 // D1 owns the application identity and every reading record.
 async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
     let path = req.path();
     if path == "/api/v1/health" {
         return reply(json!({"ok":true,"backend":"rust","version":"0.2.0"}), 200);
+    }
+    if let Some(cover_id) = path.strip_prefix("/api/v1/covers/") {
+        if req.method() == Method::Get {
+            return cover(req, cover_id).await;
+        }
     }
     if path == "/api/v1/username-available" && req.method() == Method::Get {
         let url = req.url()?;
@@ -787,7 +829,9 @@ pub async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             )?
         }
     };
-    res.headers_mut().set("Cache-Control", "no-store")?;
+    if !req.path().starts_with("/api/v1/covers/") {
+        res.headers_mut().set("Cache-Control", "no-store")?;
+    }
     res.headers_mut().set("X-Content-Type-Options", "nosniff")?;
     Ok(res)
 }
