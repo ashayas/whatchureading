@@ -1,6 +1,6 @@
-# Goodreads bridge prototype
+# Goodreads browser helper
 
-This is an opt-in Chrome MV3 bridge for the authenticated Goodreads export
+This is an opt-in Chrome MV3 helper for the authenticated Goodreads export
 flow. It does not read cookies, passwords, or tokens. After the user starts an
 import from whatchureading, it opens Goodreads, waits for the user to sign in
 if necessary, clicks the visible **Export Library** control, downloads the
@@ -20,5 +20,8 @@ window.addEventListener("message", (event) => {
 ```
 
 Load this directory through Chrome's **Extensions → Developer mode → Load
-unpacked** while developing. Production distribution should use a signed
-extension package or an equivalent first-party browser integration.
+unpacked** while developing. The web app detects the helper and switches the
+onboarding copy to the automatic flow. Production distribution should use a
+signed extension package or an equivalent first-party browser integration.
+The helper is user-controlled: it never receives or stores a Goodreads
+password, cookie, or token, and only acts after the user starts an import.

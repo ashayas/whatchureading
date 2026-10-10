@@ -1719,10 +1719,15 @@ function GoodreadsImportModal({
   const [importing, setImporting] = useState(false);
   const [complete, setComplete] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState("");
+  const [bridgeAvailable, setBridgeAvailable] = useState(false);
   const [importId] = useState(() => crypto.randomUUID());
   useEffect(() => {
     const receive = (event: MessageEvent) => {
       const message = event.data;
+      if (message?.source === "wcr-goodreads-bridge" && message.type === "WCR_GOODREADS_BRIDGE_READY") {
+        setBridgeAvailable(true);
+        return;
+      }
       if (message?.source !== "wcr-goodreads-bridge" || message.importId !== importId) return;
       if (message.type === "WCR_GOODREADS_PROGRESS") setBridgeStatus(String(message.status || "Working through Goodreads…"));
       if (message.type === "WCR_GOODREADS_DATA" && typeof message.csv === "string") {
@@ -1731,10 +1736,13 @@ function GoodreadsImportModal({
       }
     };
     addEventListener("message", receive);
+    postMessage({ type: "WCR_GOODREADS_PING" }, "*");
     return () => removeEventListener("message", receive);
   }, [importId]);
   const connectGoodreads = () => {
-    setBridgeStatus("Opening Goodreads in a new tab…");
+    setBridgeStatus(bridgeAvailable
+      ? "Automatic import is connected. Sign in to Goodreads and we’ll bring your export back here…"
+      : "Opening Goodreads. You can export manually, or install the browser helper for automatic import…");
     window.postMessage({ type: "WCR_GOODREADS_START", importId }, "*");
     window.open("https://www.goodreads.com/review/import", "_blank", "noopener,noreferrer");
   };
@@ -1806,9 +1814,9 @@ function GoodreadsImportModal({
           <h2>Bring your Goodreads library home.</h2>
           <p className="import-lede">Your Goodreads login stays with Goodreads. We only need the library file you choose to share.</p>
           <div className="goodreads-steps">
-            <div className="goodreads-step"><span>1</span><div><b>Connect Goodreads</b><small>We’ll open Goodreads so you can sign in there. Your password stays with Goodreads.</small></div><button className="outline" onClick={connectGoodreads}>Open Goodreads <ExternalLink size={14} /></button></div>
-            <div className="goodreads-step"><span>2</span><div><b>Export your library</b><small>Choose Export Library, then wait for the CSV link to appear.</small></div></div>
-            <div className="goodreads-step"><span>3</span><div><b>Drop the CSV here</b><small>We preview everything before anything is added.</small></div></div>
+            <div className="goodreads-step"><span>1</span><div><b>{bridgeAvailable ? "Connect Goodreads automatically" : "Connect Goodreads"}</b><small>{bridgeAvailable ? "We’ll open Goodreads in your browser, wait for your sign-in, and return the export here." : "We’ll open Goodreads so you can sign in there. Your password stays with Goodreads."}</small></div><button className="outline" onClick={connectGoodreads}>{bridgeAvailable ? "Start automatic import" : "Open Goodreads"} <ExternalLink size={14} /></button></div>
+            <div className="goodreads-step"><span>2</span><div><b>{bridgeAvailable ? "We’ll export your library" : "Export your library"}</b><small>{bridgeAvailable ? "The browser helper clicks Goodreads’ visible Export Library control after you sign in." : "Choose Export Library, then wait for the CSV link to appear."}</small></div></div>
+            <div className="goodreads-step"><span>3</span><div><b>{bridgeAvailable ? "Review and import" : "Drop the CSV here"}</b><small>{bridgeAvailable ? "We’ll preview everything and add only books you haven’t imported yet." : "We preview everything before anything is added."}</small></div></div>
           </div>
           {bridgeStatus && <p className="import-bridge-status" role="status"><Wind size={14} /> {bridgeStatus}</p>}
           <label className="goodreads-dropzone">
