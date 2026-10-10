@@ -22,9 +22,10 @@ import {
   Wind,
   X,
 } from "lucide-react";
-import type { Book, Bootstrap, FriendProfile, LibraryItem, Shelf, Thought } from "./types";
-import { api } from "./types";
+import type { Book, Bootstrap, FriendProfile, LibraryItem, NoteVisibility, Shelf, Thought } from "./types";
+import { api, apiUploadPdf } from "./types";
 import { authClient, signOut } from "./auth";
+import { PdfReader, loadPdfjs } from "./PdfReader";
 
 type Page = "feed" | "friends" | "discover" | "library" | "profile";
 type GoodreadsImportRecord = {
@@ -68,7 +69,7 @@ function Cover({
   className = "",
   onClick,
 }: {
-  book: Book;
+  book: Pick<Book, "id" | "title" | "author" | "isbn" | "color">;
   className?: string;
   onClick?: () => void;
 }) {
@@ -311,7 +312,8 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     [goal, setGoal] = useState(24),
     [goodreadsImportOpen, setGoodreadsImportOpen] = useState(() =>
       initialData.library.length === 0 && localStorage.getItem("wcr.goodreads-onboarding-seen") !== "1",
-    );
+    ),
+    [uploadOpen, setUploadOpen] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   async function refresh() {
     const next = await api<Bootstrap>("bootstrap");
@@ -909,7 +911,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                       <div className="friend-book-list">
                         {friendProfile.library.filter((item) => friendShelf === "all" || item.status === friendShelf).map((item) => (
                           <article className="friend-book-item" key={item.book_id}>
-                            <Cover book={{ id: item.book_id, title: item.title, author: item.author, genre: item.genre, pages: item.pages, rating: item.book_rating, isbn: item.isbn, color: item.color, friend_count: 0, description: item.description }} />
+                            <Cover book={{ id: item.book_id, title: item.title, author: item.author, isbn: item.isbn, color: item.color }} />
                             <div>
                               <span className="eyebrow">{item.status === "want" ? "WANT TO READ" : item.status === "did-not-finish" ? "DID NOT FINISH" : item.status.toUpperCase()}</span>
                               <h3>{item.title}</h3><p>{item.author}</p>
@@ -1199,9 +1201,14 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                     come.
                   </p>
                 </div>
-                <button className="primary" onClick={() => setSearchOpen(true)}>
-                  <Plus size={17} /> Add a book
-                </button>
+                <div className="page-heading-actions">
+                  <button className="outline" onClick={() => setUploadOpen(true)}>
+                    <Plus size={17} /> Upload a PDF
+                  </button>
+                  <button className="primary" onClick={() => setSearchOpen(true)}>
+                    <Plus size={17} /> Add a book
+                  </button>
+                </div>
               </div>
               <div className="library-tabs">
                 {(
@@ -1615,6 +1622,13 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           notify={notify}
         />
       )}
+      {uploadOpen && (
+        <UploadModal
+          close={() => setUploadOpen(false)}
+          refresh={refresh}
+          notify={notify}
+        />
+      )}
       {toast && (
         <div className="toast" role="status">
           <Check size={17} />
@@ -1867,7 +1881,7 @@ function GoodreadsImportModal({
           <h2>Bring your Goodreads library home.</h2>
           <p className="import-lede">Sign in inside a private Goodreads browser. Your password stays with Goodreads, and we only bring back the export you authorize.</p>
           <div className="goodreads-steps">
-            <div className="goodreads-step"><span>1</span><div><b>Open your Goodreads browser</b><small>A private browser window opens right here for your Goodreads sign-in.</small></div><button className="outline" onClick={() => void connectGoodreads}>Start import <ExternalLink size={14} /></button></div>
+            <div className="goodreads-step"><span>1</span><div><b>Open your Goodreads browser</b><small>A private browser window opens right here for your Goodreads sign-in.</small></div><button className="outline" onClick={() => void connectGoodreads()}>Start import <ExternalLink size={14} /></button></div>
             <div className="goodreads-step"><span>2</span><div><b>Sign in and we’ll export</b><small>After you sign in, the browser handles Goodreads’ visible library export.</small></div></div>
             <div className="goodreads-step"><span>3</span><div><b>Review and import</b><small>We preview everything and add only books you haven’t imported yet.</small></div></div>
           </div>
@@ -1887,6 +1901,147 @@ function GoodreadsImportModal({
       ) : (
           <div className="import-complete"><span className="import-check"><Check size={26} /></span><span className="eyebrow">YOUR SHELVES ARE HERE</span><h2>Welcome back, books.</h2><p>{records.length} books are now part of your reading life. You can update any shelf whenever you like.</p><button className="primary" onClick={dismiss}>See my library <ArrowRight size={16} /></button></div>
       )}
+    </Modal>
+  );
+}
+function UploadModal({
+  close,
+  refresh,
+  notify,
+}: {
+  close: () => void;
+  refresh: () => Promise<Bootstrap>;
+  notify: (msg: string) => void;
+}) {
+  const [file, setFile] = useState<File | null>(null),
+    [title, setTitle] = useState(""),
+    [author, setAuthor] = useState(""),
+    [kind, setKind] = useState<"book" | "paper">("book"),
+    [pages, setPages] = useState(0),
+    [error, setError] = useState(""),
+    [uploading, setUploading] = useState(false);
+  async function chooseFile(f?: File) {
+    if (!f) return;
+    if (f.type !== "application/pdf" && !f.name.toLowerCase().endsWith(".pdf")) {
+      setError("Choose a PDF file");
+      return;
+    }
+    setError("");
+    setFile(f);
+    if (!title) setTitle(f.name.replace(/\.pdf$/i, ""));
+    try {
+      const pdfjsLib = await loadPdfjs();
+      const data = await f.arrayBuffer();
+      const doc = await pdfjsLib.getDocument({ data }).promise;
+      setPages(doc.numPages);
+      const meta = await doc.getMetadata().catch(() => null);
+      const info = meta?.info as { Title?: string; Author?: string } | undefined;
+      if (info?.Title && !title) setTitle(info.Title);
+      if (info?.Author && !author) setAuthor(info.Author);
+    } catch {
+      setError("That PDF couldn't be read. Try another file.");
+      setFile(null);
+    }
+  }
+  async function submit() {
+    if (!file || !pages) return;
+    setUploading(true);
+    try {
+      const created = await api<{ id: string }>("uploads", "POST", {
+        title: title.trim(),
+        author: author.trim(),
+        kind,
+        pages,
+      });
+      await apiUploadPdf(`uploads/${created.id}/content`, "PUT", file);
+      await refresh();
+      notify("Your PDF is ready to read");
+      close();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setUploading(false);
+    }
+  }
+  return (
+    <Modal close={close}>
+      <span className="eyebrow">READ ANYTHING, ANYWHERE</span>
+      <h2>Upload a PDF.</h2>
+      <p className="import-lede">
+        Books and papers you bring in sync across your devices, right where you left off.
+      </p>
+      <label className="file-drop">
+        <FileSpreadsheet size={28} />
+        <b>{file ? file.name : "Choose a PDF"}</b>
+        <span>{file ? `${pages} pages · ready to upload` : "PDF files only · nothing uploads until you confirm"}</span>
+        <input
+          type="file"
+          accept="application/pdf"
+          onChange={(e) => void chooseFile(e.target.files?.[0])}
+        />
+      </label>
+      {error && (
+        <p className="import-error" role="alert">
+          {error}
+        </p>
+      )}
+      {file && (
+        <>
+          <div className="thought-visibility">
+            <button
+              type="button"
+              className={kind === "book" ? "active" : ""}
+              onClick={() => setKind("book")}
+            >
+              Book
+            </button>
+            <button
+              type="button"
+              className={kind === "paper" ? "active" : ""}
+              onClick={() => setKind("paper")}
+            >
+              Paper
+            </button>
+          </div>
+          <label>
+            Title
+            <input
+              value={title}
+              maxLength={250}
+              required
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </label>
+          <label>
+            Author
+            <input
+              value={author}
+              maxLength={150}
+              onChange={(e) => setAuthor(e.target.value)}
+            />
+          </label>
+        </>
+      )}
+      <div className="modal-actions">
+        <button className="outline" onClick={close}>
+          Cancel
+        </button>
+        <button
+          className="primary"
+          disabled={!file || !title.trim() || uploading}
+          onClick={() => void submit()}
+        >
+          {uploading ? (
+            <>
+              <Loader2 className="spin" size={16} /> Uploading…
+            </>
+          ) : (
+            <>
+              Add to library <ArrowRight size={16} />
+            </>
+          )}
+        </button>
+      </div>
     </Modal>
   );
 }
@@ -1914,10 +2069,14 @@ function BookModal({
     [page, setPage] = useState(item?.page || 0),
     [body, setBody] = useState(""),
     [spoiler, setSpoiler] = useState(false),
+    [visibility, setVisibility] = useState<NoteVisibility>("public"),
     [rating, setRating] = useState(item?.rating || 0),
     [review, setReview] = useState(item?.review || ""),
     [revealed, setRevealed] = useState<string[]>([]);
   const [status, setStatus] = useState<Shelf>(item?.status || "want");
+  const publicNotes = notes.filter((n) => n.visibility !== "private");
+  const privateNotes = notes.filter((n) => n.visibility === "private");
+  const isUpload = book.kind !== "catalog";
   const save = async () => {
     if (
       await mutate(
@@ -1935,14 +2094,17 @@ function BookModal({
         <Cover book={book} />
         <div>
           <span className="eyebrow">
-            {book.genre} · {book.pages} PAGES
+            {isUpload ? (book.kind === "paper" ? "PAPER" : "YOUR UPLOAD") : book.genre} ·{" "}
+            {book.pages} PAGES
           </span>
           <h2>{book.title}</h2>
           <p>{book.author}</p>
-          <span className="book-rating">
-            <Star size={14} fill="currentColor" />
-            {book.rating || "Not rated"} <small>Catalog rating</small>
-          </span>
+          {!isUpload && (
+            <span className="book-rating">
+              <Star size={14} fill="currentColor" />
+              {book.rating || "Not rated"} <small>Catalog rating</small>
+            </span>
+          )}
         </div>
       </div>
       <p className="book-description">{book.description}</p>
@@ -1963,16 +2125,19 @@ function BookModal({
         </button>
       </div>
       <div className="modal-tabs">
-        {["Progress", "Your thoughts", "Final verdict"].map((t) => (
-          <button
-            className={tab === t ? "active" : ""}
-            key={t}
-            onClick={() => setTab(t)}
-          >
-            {t}
-            {t === "Your thoughts" && <span>{notes.length}</span>}
-          </button>
-        ))}
+        {["Progress", "Your thoughts", "Private notes", "Final verdict"].map(
+          (t) => (
+            <button
+              className={tab === t ? "active" : ""}
+              key={t}
+              onClick={() => setTab(t)}
+            >
+              {t}
+              {t === "Your thoughts" && <span>{publicNotes.length}</span>}
+              {t === "Private notes" && <span>{privateNotes.length}</span>}
+            </button>
+          ),
+        )}
       </div>
       {tab === "Progress" && (
         <div className="progress-panel">
@@ -1983,43 +2148,53 @@ function BookModal({
             </span>
           </div>
           <p>Scrub to a page. Leave a thought. Remember how it felt.</p>
-          <div className="waveform">
-            <div className="wave-bars">
-              {Array.from({ length: 72 }, (_, i) => (
-                <i
-                  key={i}
-                  style={{
-                    height: `${18 + Math.abs(Math.sin(i * 1.7) * Math.cos(i * 0.4)) * 56}px`,
-                    background:
-                      i / 72 <= page / book.pages ? "#52734c" : "#dedfd4",
+          {isUpload ? (
+            <PdfReader
+              book={book}
+              page={page}
+              onPageChange={setPage}
+              notes={publicNotes}
+              mutate={mutate}
+            />
+          ) : (
+            <div className="waveform">
+              <div className="wave-bars">
+                {Array.from({ length: 72 }, (_, i) => (
+                  <i
+                    key={i}
+                    style={{
+                      height: `${18 + Math.abs(Math.sin(i * 1.7) * Math.cos(i * 0.4)) * 56}px`,
+                      background:
+                        i / 72 <= page / book.pages ? "#52734c" : "#dedfd4",
+                    }}
+                  />
+                ))}
+              </div>
+              <input
+                aria-label="Reading timeline"
+                type="range"
+                min={0}
+                max={book.pages}
+                value={page}
+                onChange={(e) => setPage(Number(e.target.value))}
+              />
+              {publicNotes.map((n) => (
+                <button
+                  key={n.id}
+                  className="thought-marker"
+                  style={{ left: `${(n.page / book.pages) * 100}%` }}
+                  title={`Thought at page ${n.page}`}
+                  aria-label={`Read thought at page ${n.page}`}
+                  onClick={() => {
+                    setPage(n.page);
+                    setTab("Your thoughts");
                   }}
-                />
+                >
+                  <MessageCircle size={12} fill="currentColor" />
+                </button>
               ))}
             </div>
-            <input
-              aria-label="Reading timeline"
-              type="range"
-              min={0}
-              max={book.pages}
-              value={page}
-              onChange={(e) => setPage(Number(e.target.value))}
-            />
-            {notes.map((n) => (
-              <button
-                key={n.id}
-                className="thought-marker"
-                style={{ left: `${(n.page / book.pages) * 100}%` }}
-                title={`Thought at page ${n.page}`}
-                aria-label={`Read thought at page ${n.page}`}
-                onClick={() => {
-                  setPage(n.page);
-                  setTab("Your thoughts");
-                }}
-              >
-                <MessageCircle size={12} fill="currentColor" />
-              </button>
-            ))}
-          </div>
+          )}
           <div className="timeline-labels">
             <span>Page 1</span>
             <label>
@@ -2072,11 +2247,15 @@ function BookModal({
                 await mutate(
                   "notes",
                   "POST",
-                  { book_id: book.id, page, body, spoiler },
-                  "A thought, saved between the pages",
+                  { book_id: book.id, page, body, spoiler, visibility },
+                  visibility === "private"
+                    ? "A private thought, just for you"
+                    : "A thought, saved between the pages",
                 )
-              )
+              ) {
                 setBody("");
+                setSpoiler(false);
+              }
             }}
           >
             <label>
@@ -2089,6 +2268,22 @@ function BookModal({
                 onChange={(e) => setBody(e.target.value)}
               />
             </label>
+            <div className="thought-visibility">
+              <button
+                type="button"
+                className={visibility === "public" ? "active" : ""}
+                onClick={() => setVisibility("public")}
+              >
+                Public
+              </button>
+              <button
+                type="button"
+                className={visibility === "private" ? "active" : ""}
+                onClick={() => setVisibility("private")}
+              >
+                Private
+              </button>
+            </div>
             <div>
               <label className="checkbox-label">
                 <input
@@ -2105,10 +2300,10 @@ function BookModal({
           </form>
         </div>
       )}
-      {tab === "Your thoughts" && (
+      {(tab === "Your thoughts" || tab === "Private notes") && (
         <div className="thought-list">
-          {notes.length ? (
-            notes.map((n) => (
+          {(tab === "Your thoughts" ? publicNotes : privateNotes).length ? (
+            (tab === "Your thoughts" ? publicNotes : privateNotes).map((n) => (
               <article key={n.id}>
                 <span className="page-chip">
                   <Bookmark size={12} />
@@ -2133,8 +2328,16 @@ function BookModal({
             ))
           ) : (
             <Empty
-              title="Catch a passing thought"
-              text="Use the progress timeline to leave your first note."
+              title={
+                tab === "Your thoughts"
+                  ? "Catch a passing thought"
+                  : "Private thoughts, just for you"
+              }
+              text={
+                tab === "Your thoughts"
+                  ? "Use the progress timeline to leave your first note."
+                  : "Mark a thought private and only you will ever see it."
+              }
               action={() => setTab("Progress")}
               label="Leave a thought"
             />

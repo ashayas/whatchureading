@@ -87,7 +87,7 @@ def parse_date(raw):
     return {"value": None, "precision": "unknown", "raw": raw}
 
 
-def extract(source, user_id, name, memberships=None, partial=False):
+def extract(source, user_id, name, memberships=None, partial=False, friend_default_status=None):
     root = Document(source).root
     title_nodes = root.find(lambda n: n.tag == "title")
     title = clean(title_nodes[0].text()) if title_nodes else ""
@@ -123,13 +123,23 @@ def extract(source, user_id, name, memberships=None, partial=False):
             # On a friend's page this cell is YOUR shelves, not the friend's.
             # Explicit membership input is therefore mandatory for friend imports.
             ratings = fields["rating"].find(lambda n: n.has_class("stars"))
-            if not ratings or ratings[0].attrs.get("data-user-id") != user_id:
+            if friend_default_status:
+                read_count = re.search(r"# times read\s+(\d+)", text("read_count"), re.I)
+                read_dates = fields["date_read"].find(lambda n: n.has_class("editable_date"))
+                has_read_date = any(clean(n.text()).lower() != "not set" for n in read_dates)
+                fallback_shelf = {"want": "to-read", "reading": "currently-reading", "did-not-finish": "did-not-finish"}[friend_default_status]
+                shelves = ["read"] if (has_read_date or (read_count and int(read_count[1]) > 0)) else [fallback_shelf]
+            elif not ratings or ratings[0].attrs.get("data-user-id") != user_id:
                 raise ValueError("Friend library requires --memberships; viewer shelves cannot be used")
-            shelves = [clean(n.text()) for n in fields["shelves"].find(lambda n: n.tag == "a" and n.has_class("shelfLink"))]
+            else:
+                shelves = [clean(n.text()) for n in fields["shelves"].find(lambda n: n.tag == "a" and n.has_class("shelfLink"))]
         images = fields["cover"].find(lambda n: n.tag == "img")
         stars = fields["rating"].find(lambda n: n.has_class("readOnlyStar"))
         own_stars = fields["rating"].find(lambda n: n.has_class("stars"))
-        rating = float(own_stars[0].attrs.get("data-rating", 0)) if own_stars else sum(1 for n in stars if n.has_class("full") or n.has_class("p10")) + sum(.5 for n in stars if n.has_class("half") or n.has_class("p5"))
+        if friend_default_status and (not own_stars or own_stars[0].attrs.get("data-user-id") != user_id):
+            rating = sum(1 for n in stars if n.has_class("full") or n.has_class("p10")) + sum(.5 for n in stars if n.has_class("half") or n.has_class("p5"))
+        else:
+            rating = float(own_stars[0].attrs.get("data-rating", 0)) if own_stars else sum(1 for n in stars if n.has_class("full") or n.has_class("p10")) + sum(.5 for n in stars if n.has_class("half") or n.has_class("p5"))
         full_review = fields["review"].find(lambda n: n.attrs.get("id") == "freeTextreview" + review_id)
         review_text = (full_review[0] if full_review else fields["review"]).prose().strip()
         if review_text == "None":
@@ -160,8 +170,8 @@ def extract(source, user_id, name, memberships=None, partial=False):
     return {"schema_version": 2, "source": "goodreads", "goodreads_user_id": user_id, "name": name, "expected_books": expected, "records": records}
 
 
-def extract_pages(sources, user_id, name, memberships=None, allow_unassigned=False):
-    pages = [extract(s, user_id, name, memberships, partial=True) for s in sources]
+def extract_pages(sources, user_id, name, memberships=None, allow_unassigned=False, friend_default_status=None):
+    pages = [extract(s, user_id, name, memberships, partial=True, friend_default_status=friend_default_status) for s in sources]
     if not pages or len({p["expected_books"] for p in pages}) != 1:
         raise ValueError("Missing pages or inconsistent library totals")
     records = [r for p in pages for r in p["records"]]
@@ -226,6 +236,7 @@ def main():
     parser.add_argument("--user-id", required=True)
     parser.add_argument("--name", required=True)
     parser.add_argument("--memberships", type=Path)
+    parser.add_argument("--friend-default-status", choices=("want", "reading", "did-not-finish"), help="For a friend-view capture, use this status where Goodreads does not expose the subject's shelf; dated/read-count books are marked read.")
     parser.add_argument("--shelf", nargs=2, action="append", metavar=("NAME", "HTML"), help="Repeat for every page of every shelf, including custom shelves")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -237,7 +248,9 @@ def main():
         for shelf, path in args.shelf:
             captures.setdefault(shelf, []).append(Path(path).read_text())
         memberships = shelf_memberships(captures, args.user_id)
-    data = extract_pages([p.read_text() for p in args.html], args.user_id, args.name, memberships)
+    if args.friend_default_status and memberships is not None:
+        parser.error("Use --friend-default-status or memberships, not both")
+    data = extract_pages([p.read_text() for p in args.html], args.user_id, args.name, memberships, friend_default_status=args.friend_default_status)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
     args.output.chmod(0o600)

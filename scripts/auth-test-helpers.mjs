@@ -151,11 +151,15 @@ export async function cleanupTestUsers() {
       return `'${id}'`;
     })
     .join(",");
-  const where = `reader_id IN (SELECT id FROM readers WHERE supabase_user_id IN (${ids}))`;
+  const readerIds = `(SELECT id FROM readers WHERE supabase_user_id IN (${ids}))`;
+  const where = `reader_id IN ${readerIds}`;
   const sql =
     ["library", "notes", "swipes", "likes"]
       .map((table) => `DELETE FROM ${table} WHERE ${where};`)
-      .join("\n") + `\nDELETE FROM readers WHERE supabase_user_id IN (${ids});`;
+      .join("\n") +
+    `\nDELETE FROM reader_friends WHERE reader_id IN ${readerIds} OR friend_id IN ${readerIds};` +
+    `\nDELETE FROM books WHERE uploader_reader_id IN ${readerIds};` +
+    `\nDELETE FROM readers WHERE supabase_user_id IN (${ids});`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wcr-auth-cleanup-"));
   const file = path.join(dir, "cleanup.sql");
   fs.writeFileSync(file, sql, { mode: 0o600 });
@@ -199,6 +203,7 @@ export async function cleanupTestUsers() {
       });
       assert.ok(result.ok, "Temporary auth account removed");
     }
+    created.length = 0;
   }
 }
 export async function recoveryLink(email) {

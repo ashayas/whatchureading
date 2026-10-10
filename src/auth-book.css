@@ -39,6 +39,28 @@
   align-self: flex-start;
   margin-top: 9px;
 }
+.auth-promise {
+  position: absolute;
+  top: 29px;
+  right: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: 360px;
+  text-align: right;
+}
+.auth-promise strong {
+  color: #4b6251;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.65px;
+  text-transform: uppercase;
+}
+.auth-promise span {
+  color: #929887;
+  font-size: 10px;
+}
 .auth-book {
   width: min(980px, 100%);
   min-height: 600px;
@@ -589,6 +611,18 @@
     left: 24px;
     top: 25px;
     font-size: 17px;
+  }
+  .auth-promise {
+    top: 62px;
+    left: 24px;
+    right: 24px;
+    align-items: flex-start;
+    max-width: none;
+    text-align: left;
+  }
+  .auth-promise strong,
+  .auth-promise span {
+    font-size: 8px;
   }
   .auth-book {
     display: block;

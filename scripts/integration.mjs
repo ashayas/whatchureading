@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   base,
   createTestUser,
@@ -53,6 +54,28 @@ try {
   assert.equal(r.data.library.length, 0);
   assert.equal(r.data.notes.length, 0);
   assert.notEqual(r.data.reader_id, user.id);
+  const username = `reader_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  r = await request(
+    `username-available?username=${username}`,
+    "GET",
+    undefined,
+    "",
+  );
+  assert.equal(r.data.available, true);
+  assert.equal((await request("username", "PUT", { username })).status, 200);
+  r = await request(
+    `username-available?username=${username}`,
+    "GET",
+    undefined,
+    "",
+  );
+  assert.equal(r.data.available, false);
+  assert.equal(
+    (await request("username", "PUT", { username }, other.token)).status,
+    409,
+  );
+  r = await request("bootstrap");
+  assert.equal(r.data.profile.username, username);
   await request("library", "PUT", {
     book_id: "midnight",
     status: "reading",
@@ -142,6 +165,113 @@ try {
   assert.equal(r.status, 200);
   console.log(
     "PASS: real Supabase signup/login, anonymous & forged-token rejection, D1 persistence, notes, reviews, validation, swipes, profile, and two-account isolation.",
+  );
+} finally {
+  await cleanupTestUsers();
+}
+try {
+  const owner = await createTestUser();
+  const friend = await createTestUser();
+  const stranger = await createTestUser();
+  async function req(path, method, body, token, extraHeaders = {}) {
+    const r = await fetch(base + "/api/v1/" + path, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...extraHeaders,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: r.status, data: await r.json() };
+  }
+  // Let `friend` see `owner`'s profile via the friends endpoint.
+  const ownerBoot = await req("bootstrap", "GET", undefined, owner.token);
+  const friendBoot = await req("bootstrap", "GET", undefined, friend.token);
+  execFileSync(
+    "npx",
+    [
+      "wrangler",
+      "d1",
+      "execute",
+      "DB",
+      "--local",
+      "--command",
+      `INSERT INTO reader_friends(reader_id,friend_id) VALUES ('${friendBoot.data.reader_id}','${ownerBoot.data.reader_id}')`,
+    ],
+    { stdio: "pipe" },
+  );
+  let r = await req("uploads", "POST", {
+    title: "My Uploaded Paper",
+    author: "Test Author",
+    kind: "paper",
+    pages: 3,
+  }, owner.token);
+  assert.equal(r.status, 201);
+  const bookId = r.data.id;
+  const pdfBytes = Buffer.concat([
+    Buffer.from("%PDF-1.4\n"),
+    Buffer.alloc(16, 0),
+  ]);
+  const putRes = await fetch(`${base}/api/v1/uploads/${bookId}/content`, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${owner.token}`,
+      "Content-Type": "application/pdf",
+    },
+    body: pdfBytes,
+  });
+  assert.equal(putRes.status, 200);
+  const getRes = await fetch(`${base}/api/v1/uploads/${bookId}/content`, {
+    headers: { Authorization: `Bearer ${owner.token}` },
+  });
+  assert.equal(getRes.status, 200);
+  assert.equal(getRes.headers.get("content-type"), "application/pdf");
+  const roundTrip = Buffer.from(await getRes.arrayBuffer());
+  assert.equal(roundTrip.equals(pdfBytes), true);
+  // A different reader can never fetch another reader's uploaded content.
+  const forbidden = await fetch(`${base}/api/v1/uploads/${bookId}/content`, {
+    headers: { Authorization: `Bearer ${stranger.token}` },
+  });
+  assert.equal(forbidden.status, 404);
+  // Personal uploads never leak into another reader's shared catalog/discovery.
+  r = await req("bootstrap", "GET", undefined, stranger.token);
+  assert.equal(r.data.books.some((b) => b.id === bookId), false);
+  assert.equal(r.data.recommendations.some((b) => b.id === bookId), false);
+  r = await req("bootstrap", "GET", undefined, owner.token);
+  assert.equal(r.data.books.some((b) => b.id === bookId), true);
+  r = await req("uploads/mine", "GET", undefined, owner.token);
+  assert.equal(r.data.books.some((b) => b.id === bookId), true);
+  // Public vs. private notes.
+  r = await req(
+    "notes",
+    "POST",
+    { book_id: bookId, page: 1, body: "A public thought", visibility: "public" },
+    owner.token,
+  );
+  assert.equal(r.status, 201);
+  r = await req(
+    "notes",
+    "POST",
+    { book_id: bookId, page: 2, body: "A private thought", visibility: "private" },
+    owner.token,
+  );
+  assert.equal(r.status, 201);
+  r = await req("bootstrap", "GET", undefined, owner.token);
+  assert.equal(
+    r.data.notes.find((n) => n.body === "A public thought").visibility,
+    "public",
+  );
+  assert.equal(
+    r.data.notes.find((n) => n.body === "A private thought").visibility,
+    "private",
+  );
+  r = await req(`friends/${ownerBoot.data.reader_id}`, "GET", undefined, friend.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.notes.some((n) => n.body === "A public thought"), true);
+  assert.equal(r.data.notes.some((n) => n.body === "A private thought"), false);
+  console.log(
+    "PASS: PDF upload content round-trip, cross-account upload isolation, and public/private note visibility.",
   );
 } finally {
   await cleanupTestUsers();

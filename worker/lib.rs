@@ -23,12 +23,34 @@ fn arg(s: &str) -> wasm_bindgen::JsValue {
 fn num(n: i64) -> wasm_bindgen::JsValue {
     (n as f64).into()
 }
+fn real(n: f64) -> wasm_bindgen::JsValue {
+    n.into()
+}
 // Never accept browser-supplied reader IDs. Supabase verifies the bearer token;
 // D1 owns the application identity and every reading record.
 async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
     let path = req.path();
     if path == "/api/v1/health" {
         return reply(json!({"ok":true,"backend":"rust","version":"0.2.0"}), 200);
+    }
+    if path == "/api/v1/username-available" && req.method() == Method::Get {
+        let url = req.url()?;
+        let username = url
+            .query_pairs()
+            .find(|(key, _)| key == "username")
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !valid_username(&username) {
+            return reply(json!({"available":false,"valid":false}), 200);
+        }
+        let db = env.d1("DB")?;
+        let found = db
+            .prepare("SELECT 1 AS taken FROM readers WHERE username=? COLLATE NOCASE LIMIT 1")
+            .bind(&[arg(&username)])?
+            .first::<Value>(None)
+            .await?;
+        return reply(json!({"available":found.is_none(),"valid":true}), 200);
     }
     let auth_url = env.secret("AUTH_SUPABASE_URL")?.to_string();
     let public_key = env.secret("AUTH_SUPABASE_KEY")?.to_string();
@@ -121,6 +143,12 @@ async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
     let id = text(&reader, "id");
     handle(req.clone()?, env, id).await
 }
+fn valid_username(username: &str) -> bool {
+    (3..=20).contains(&username.len())
+        && username
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+}
 fn genre_attribute(genre: &str) -> usize {
     match genre {
         "Fiction" | "Memoir" => 0,
@@ -134,7 +162,7 @@ fn genre_attribute(genre: &str) -> usize {
 fn attributes(library: &[Value], books: &[Value]) -> Value {
     let mut scores = [15i64; 6];
     for item in library {
-        if text(item, "status") == "want" {
+        if matches!(text(item, "status"), "want" | "did-not-finish") {
             continue;
         }
         if let Some(b) = books.iter().find(|b| b["id"] == item["book_id"]) {
@@ -152,14 +180,15 @@ fn recommendations(books: &[Value], library: &[Value], swipes: &[Value]) -> Vec<
     let mut result: Vec<Value> = books
         .iter()
         .filter(|b| {
-            !library.iter().any(|l| l["book_id"] == b["id"])
+            int(b, "is_shared") == 1
+                && !library.iter().any(|l| l["book_id"] == b["id"])
                 && !swipes.iter().any(|s| s["book_id"] == b["id"])
         })
         .map(|b| {
             let affinity: i64 = library
                 .iter()
                 .filter(|l| {
-                    text(l, "status") != "want"
+                    !matches!(text(l, "status"), "want" | "did-not-finish")
                         && books
                             .iter()
                             .any(|x| x["id"] == l["book_id"] && x["genre"] == b["genre"])
@@ -196,8 +225,70 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         return reply(json!({"ok":true,"backend":"rust","version":"0.1.0"}), 200);
     }
     let db = env.d1("DB")?;
+    if method == Method::Get {
+        if let Some(friend_id) = path.strip_prefix("/api/v1/friends/") {
+            if Uuid::parse_str(friend_id).is_err() {
+                return reply(json!({"error":"Friend not found"}), 404);
+            }
+            let allowed = db.prepare("SELECT 1 AS connected FROM reader_friends WHERE reader_id=? AND friend_id=?")
+                .bind(&[arg(id), arg(friend_id)])?
+                .first::<Value>(None).await?;
+            if allowed.is_none() {
+                return reply(json!({"error":"That reader is not in your friends list."}), 404);
+            }
+            let profile = db.prepare("SELECT id,name,goal FROM readers WHERE id=?")
+                .bind(&[arg(friend_id)])?.first::<Value>(None).await?;
+            let library = rows(&db, "SELECT l.*,b.title,b.author,b.genre,b.pages,b.rating AS book_rating,b.isbn,b.color,b.description FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=? ORDER BY CASE l.status WHEN 'reading' THEN 0 WHEN 'did-not-finish' THEN 1 WHEN 'want' THEN 2 ELSE 3 END,l.updated_at DESC,b.title", vec![arg(friend_id)]).await?;
+            let notes = rows(&db, "SELECT n.id,n.book_id,n.page,n.body,n.spoiler,n.created_at,b.title,b.author FROM notes n JOIN books b ON b.id=n.book_id WHERE n.reader_id=? AND n.visibility='public' ORDER BY n.created_at DESC", vec![arg(friend_id)]).await?;
+            return reply(json!({"profile":profile,"library":library,"notes":notes}), 200);
+        }
+    }
+    if method == Method::Get && path == "/api/v1/uploads/mine" {
+        let mine = rows(
+            &db,
+            "SELECT * FROM books WHERE uploader_reader_id=? ORDER BY title",
+            vec![arg(id)],
+        )
+        .await?;
+        return reply(json!({"books":mine}), 200);
+    }
+    if method == Method::Get {
+        if let Some(book_id) = path
+            .strip_prefix("/api/v1/uploads/")
+            .and_then(|p| p.strip_suffix("/content"))
+        {
+            let owner = db
+                .prepare("SELECT content_key FROM books WHERE id=? AND uploader_reader_id=?")
+                .bind(&[arg(book_id), arg(id)])?
+                .first::<Value>(None)
+                .await?;
+            let Some(owner) = owner else {
+                return reply(json!({"error":"Not found"}), 404);
+            };
+            let key = text(&owner, "content_key");
+            let bucket = env.bucket("UPLOADS")?;
+            let object = bucket.get(key).execute().await?;
+            let Some(object) = object else {
+                return reply(json!({"error":"Not found"}), 404);
+            };
+            let Some(body) = object.body() else {
+                return reply(json!({"error":"Not found"}), 404);
+            };
+            let bytes = body.bytes().await?;
+            let mut res = Response::from_bytes(bytes)?;
+            res.headers_mut().set("Content-Type", "application/pdf")?;
+            res.headers_mut()
+                .set("Cache-Control", "private, max-age=3600")?;
+            return Ok(res);
+        }
+    }
     if method == Method::Get && path == "/api/v1/bootstrap" {
-        let books = rows(&db, "SELECT * FROM books", vec![]).await?;
+        let books = rows(
+            &db,
+            "SELECT * FROM books WHERE is_shared=1 OR uploader_reader_id=?",
+            vec![arg(id)],
+        )
+        .await?;
         let library = rows(
             &db,
             "SELECT * FROM library WHERE reader_id=? ORDER BY updated_at DESC",
@@ -217,13 +308,19 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             vec![arg(id)],
         )
         .await?;
+        let friends = rows(
+            &db,
+            "SELECT r.id,r.name,(SELECT l.book_id FROM library l WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1) AS book_id,(SELECT b.title FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1) AS book_title,COALESCE((SELECT CAST(MIN(100,MAX(0,l.page)*100/b.pages) AS INTEGER) FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1),0) AS progress FROM reader_friends rf JOIN readers r ON r.id=rf.friend_id WHERE rf.reader_id=? ORDER BY r.name",
+            vec![arg(id)],
+        )
+        .await?;
         let profile = db
-            .prepare("SELECT name,goal FROM readers WHERE id=?")
+            .prepare("SELECT name,username,goal FROM readers WHERE id=?")
             .bind(&[arg(id)])?
             .first::<Value>(None)
             .await?;
         return reply(
-            json!({"reader_id":id,"profile":profile,"attributes":attributes(&library,&books),"recommendations":recommendations(&books,&library,&swipes),"books":books,"library":library,"notes":notes,"likes":likes,"demo_friends":true}),
+            json!({"reader_id":id,"profile":profile,"attributes":attributes(&library,&books),"recommendations":recommendations(&books,&library,&swipes),"books":books,"library":library,"notes":notes,"likes":likes,"friends":friends,"demo_friends":false}),
             200,
         );
     }
@@ -270,14 +367,104 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             return reply(json!({"error":"Origin not allowed"}), 403);
         }
     }
+    if method == Method::Put {
+        if let Some(book_id) = path
+            .strip_prefix("/api/v1/uploads/")
+            .and_then(|p| p.strip_suffix("/content"))
+        {
+            let owner = db
+                .prepare("SELECT content_key FROM books WHERE id=? AND uploader_reader_id=?")
+                .bind(&[arg(book_id), arg(id)])?
+                .first::<Value>(None)
+                .await?;
+            let Some(owner) = owner else {
+                return reply(json!({"error":"Not found"}), 404);
+            };
+            let key = text(&owner, "content_key").to_string();
+            let bytes = req.bytes().await?;
+            if bytes.len() > 40_000_000 {
+                return reply(json!({"error":"PDF is too large (40MB limit)"}), 413);
+            }
+            if bytes.len() < 4 || &bytes[0..4] != b"%PDF" {
+                return bad("File does not look like a PDF");
+            }
+            let bucket = env.bucket("UPLOADS")?;
+            bucket
+                .put(&key, bytes)
+                .http_metadata(HttpMetadata {
+                    content_type: Some("application/pdf".into()),
+                    ..Default::default()
+                })
+                .execute()
+                .await?;
+            return reply(json!({"ok":true}), 200);
+        }
+    }
     let body = req.text().await?;
-    if body.len() > 16000 {
+    let body_limit = if path == "/api/v1/import/goodreads" { 2_000_000 } else { 16000 };
+    if body.len() > body_limit {
         return reply(json!({"error":"Request too large"}), 413);
     }
     let v: Value = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(_) => return bad("Expected a JSON body"),
     };
+    if path == "/api/v1/username" && method == Method::Put {
+        let username = text(&v, "username").trim().to_ascii_lowercase();
+        if !valid_username(&username) {
+            return bad("Username must be 3–20 characters using letters, numbers, or underscores");
+        }
+        let result = db
+            .prepare("UPDATE readers SET username=?,name=? WHERE id=?")
+            .bind(&[arg(&username), arg(&username), arg(id)])?
+            .run()
+            .await;
+        if let Err(error) = result {
+            if error.to_string().contains("UNIQUE constraint failed") {
+                return reply(
+                    json!({"error":"That username is already taken. Choose another one."}),
+                    409,
+                );
+            }
+            return Err(error);
+        }
+        return reply(json!({"ok":true}), 200);
+    }
+    if path == "/api/v1/import/goodreads" && method == Method::Post {
+        let Some(records) = v.get("records").and_then(Value::as_array) else {
+            return bad("Choose a Goodreads CSV export first");
+        };
+        if records.is_empty() || records.len() > 2000 {
+            return bad("Goodreads imports must contain between 1 and 2,000 books");
+        }
+        let mut statements = Vec::with_capacity(records.len() * 2);
+        let mut imported = 0i64;
+        for record in records {
+            let source_id = text(record, "goodreads_book_id").trim();
+            let title = text(record, "title").trim();
+            let author = text(record, "author").trim();
+            let status = text(record, "status");
+            let pages = int(record, "pages");
+            let rating = record.get("rating").and_then(Value::as_i64);
+            let average = record.get("average_rating").and_then(Value::as_f64).unwrap_or(0.0);
+            if source_id.is_empty() || !source_id.chars().all(|c| c.is_ascii_digit()) || title.is_empty() || title.len() > 250 || author.len() > 150 || !["reading", "want", "read", "did-not-finish"].contains(&status) || !(1..=20000).contains(&pages) || rating.is_some_and(|r| !(1..=5).contains(&r)) {
+                return bad("One Goodreads row is incomplete or invalid");
+            }
+            let book_id = format!("goodreads-{source_id}");
+            let isbn = text(record, "isbn");
+            let description = text(record, "description");
+            let review = text(record, "review");
+            let started = text(record, "started_at");
+            let finished = text(record, "finished_at");
+            let history = record.get("history").cloned().unwrap_or_else(|| json!({})).to_string();
+            statements.push(db.prepare("INSERT OR IGNORE INTO books(id,title,author,genre,pages,rating,isbn,color,friend_count,description) VALUES (?,?,?,'Uncategorized',?,?,?,'#8f9f70',0,?)").bind(&[arg(&book_id), arg(title), arg(author), num(pages), real(average.clamp(0.0, 5.0)), arg(isbn), arg(description)])?);
+            let page = if status == "read" { pages } else { 0 };
+            statements.push(db.prepare("INSERT OR IGNORE INTO library(reader_id,book_id,status,page,rating,review,started_at,finished_at,reading_history) VALUES (?,?,?,?,?,?,?,?,?)").bind(&[arg(id), arg(&book_id), arg(status), num(page), rating.map(num).unwrap_or(wasm_bindgen::JsValue::NULL), arg(review), if started.is_empty() { wasm_bindgen::JsValue::NULL } else { arg(started) }, if finished.is_empty() { wasm_bindgen::JsValue::NULL } else { arg(finished) }, arg(&history)])?);
+            imported += 1;
+        }
+        db.batch(statements).await?;
+        return reply(json!({"ok":true,"records":imported}), 201);
+    }
     if path == "/api/v1/profile" && method == Method::Put {
         let goal = int(&v, "goal");
         let name = text(&v, "name").trim();
@@ -327,6 +514,35 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         db.prepare("INSERT OR IGNORE INTO books(id,title,author,genre,pages,rating,isbn,color,friend_count,description) VALUES (?,?,?,'Fiction',?,0,?,'#60786a',0,'Added from Open Library. Reading attributes use Fiction until more genre metadata is available.')").bind(&[arg(&book_id),arg(title),arg(author),num(pages),arg(&format!("cover:{cover}"))])?.run().await?;
         return reply(json!({"id":book_id}), 201);
     }
+    if path == "/api/v1/uploads" && method == Method::Post {
+        let title = text(&v, "title").trim();
+        let author = text(&v, "author").trim();
+        let kind = text(&v, "kind");
+        let pages = int(&v, "pages");
+        if title.is_empty()
+            || title.len() > 250
+            || author.len() > 150
+            || !["book", "paper"].contains(&kind)
+            || !(1..=20000).contains(&pages)
+        {
+            return bad("Enter a title, author, kind, and valid page count");
+        }
+        let book_id = Uuid::new_v4().to_string();
+        let content_key = format!("uploads/{id}/{book_id}.pdf");
+        db.prepare("INSERT INTO books(id,title,author,genre,pages,rating,isbn,color,friend_count,description,kind,content_key,uploader_reader_id,is_shared) VALUES (?,?,?,'Uncategorized',?,0,'','#6b5b4a',0,'',?,?,?,0)")
+            .bind(&[
+                arg(&book_id),
+                arg(title),
+                arg(author),
+                num(pages),
+                arg(kind),
+                arg(&content_key),
+                arg(id),
+            ])?
+            .run()
+            .await?;
+        return reply(json!({"id":book_id,"content_key":content_key}), 201);
+    }
     if path == "/api/v1/swipes/reset" && method == Method::Post {
         db.prepare("DELETE FROM swipes WHERE reader_id=? AND action='skip'")
             .bind(&[arg(id)])?
@@ -359,7 +575,7 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         let page = int(&v, "page");
         let rating = v["rating"].as_i64();
         let review = text(&v, "review");
-        if !["reading", "want", "read"].contains(&status)
+        if !["reading", "want", "read", "did-not-finish"].contains(&status)
             || page < 0
             || page > pages
             || review.len() > 5000
@@ -369,23 +585,28 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         }
         let p = if status == "read" {
             pages
-        } else if status == "want" {
+        } else if status == "want" || status == "did-not-finish" {
             0
         } else {
             page
         };
-        db.prepare("INSERT INTO library(reader_id,book_id,status,page,rating,review,finished_at) VALUES (?,?,?,?,?,?,CASE WHEN ?='read' THEN CURRENT_TIMESTAMP ELSE NULL END) ON CONFLICT(reader_id,book_id) DO UPDATE SET status=excluded.status,page=excluded.page,rating=excluded.rating,review=excluded.review,updated_at=CURRENT_TIMESTAMP,finished_at=CASE WHEN excluded.status='read' THEN COALESCE(library.finished_at,CURRENT_TIMESTAMP) ELSE NULL END").bind(&[arg(id),arg(book_id),arg(status),num(p),rating.map(num).unwrap_or(wasm_bindgen::JsValue::NULL),arg(review),arg(status)])?.run().await?;
+        db.prepare("INSERT INTO library(reader_id,book_id,status,page,rating,review,started_at,finished_at) VALUES (?,?,?,?,?,?,CASE WHEN ? IN ('reading','read','did-not-finish') THEN CURRENT_TIMESTAMP ELSE NULL END,CASE WHEN ?='read' THEN CURRENT_TIMESTAMP ELSE NULL END) ON CONFLICT(reader_id,book_id) DO UPDATE SET status=excluded.status,page=excluded.page,rating=excluded.rating,review=excluded.review,updated_at=CURRENT_TIMESTAMP,started_at=CASE WHEN excluded.status='reading' THEN COALESCE(library.started_at,CURRENT_TIMESTAMP) WHEN excluded.status='want' THEN NULL ELSE library.started_at END,finished_at=CASE WHEN excluded.status='read' THEN COALESCE(library.finished_at,CURRENT_TIMESTAMP) ELSE NULL END").bind(&[arg(id),arg(book_id),arg(status),num(p),rating.map(num).unwrap_or(wasm_bindgen::JsValue::NULL),arg(review),arg(status),arg(status)])?.run().await?;
         return reply(json!({"ok":true}), 200);
     }
     if path == "/api/v1/notes" && method == Method::Post {
         let page = int(&v, "page");
         let note = text(&v, "body").trim();
+        let visibility = if text(&v, "visibility") == "private" {
+            "private"
+        } else {
+            "public"
+        };
         if page < 0 || page > pages || note.is_empty() || note.len() > 2000 {
             return bad("A thought needs text and a valid page");
         }
         let note_id = Uuid::new_v4().to_string();
         db.prepare(
-            "INSERT INTO notes(id,reader_id,book_id,page,body,spoiler) VALUES (?,?,?,?,?,?)",
+            "INSERT INTO notes(id,reader_id,book_id,page,body,spoiler,visibility) VALUES (?,?,?,?,?,?,?)",
         )
         .bind(&[
             arg(&note_id),
@@ -398,6 +619,7 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             } else {
                 0
             }),
+            arg(visibility),
         ])?
         .run()
         .await?;
@@ -444,9 +666,9 @@ mod tests {
     #[test]
     fn recommendations_exclude_shelves_and_skips() {
         let books = vec![
-            json!({"id":"a","genre":"Fiction","friend_count":2}),
-            json!({"id":"b","genre":"History","friend_count":1}),
-            json!({"id":"c","genre":"Fiction","friend_count":3}),
+            json!({"id":"a","genre":"Fiction","friend_count":2,"is_shared":1}),
+            json!({"id":"b","genre":"History","friend_count":1,"is_shared":1}),
+            json!({"id":"c","genre":"Fiction","friend_count":3,"is_shared":1}),
         ];
         let library = vec![json!({"book_id":"a","status":"read","rating":5})];
         let swipes = vec![json!({"book_id":"b"})];
@@ -454,6 +676,16 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0]["id"], "c");
         assert_eq!(result[0]["match_score"], 84);
+    }
+    #[test]
+    fn recommendations_exclude_personal_uploads() {
+        let books = vec![
+            json!({"id":"a","genre":"Fiction","friend_count":2,"is_shared":1}),
+            json!({"id":"b","genre":"Fiction","friend_count":5,"is_shared":0}),
+        ];
+        let result = recommendations(&books, &[], &[]);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["id"], "a");
     }
     #[test]
     fn attributes_ignore_wishlist_and_cap_scores() {

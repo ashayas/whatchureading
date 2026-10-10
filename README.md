@@ -4,6 +4,43 @@ An open-source reading app with a React/TypeScript web frontend, a Rust Cloudfla
 
 Live app: [whatchureading.com](https://whatchureading.com).
 
+## Self-hosting
+
+You can run the app on your own machine or server with Docker Compose, or use the included Kubernetes example. The app API still runs as a Cloudflare Worker, using Wrangler's local Worker runtime and a persistent, local D1-compatible SQLite database. It does not connect to Cloudflare or need a Cloudflare account in this mode. The default hosted deployment remains Cloudflare Workers with Cloudflare D1; its configuration and deployment flow are unchanged.
+
+It is **not just a SQLite file path**: this API uses the D1 binding interface, so Wrangler manages the local SQLite database and applies the schema migrations at startup. The local database starts empty. The private catalog seed is intentionally excluded; readers can add books through Open Library search. Back up the persistent `/data` volume regularly. Keep this single replica when using SQLite; the Kubernetes example uses one replica and a `ReadWriteOnce` volume.
+
+Supabase Auth is still required for signup and login. You may use a hosted Supabase project or run Supabase yourself; set its public project URL and publishable key below. The browser must be able to reach that auth URL. Configure the auth site's allowed origins and redirect URLs for the address where you serve this app, including `/auth/callback`.
+
+### Docker Compose
+
+Requires Docker with Compose. From the repository root, create a private environment file with your Supabase settings:
+
+```sh
+cat > .env.selfhost <<'EOF'
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_PUBLISHABLE_KEY=your-publishable-key
+EOF
+docker compose --env-file .env.selfhost up --build -d
+```
+
+Open http://localhost:8787. Compose binds to localhost by default; put a TLS reverse proxy in front if you want to serve it to other devices. Data persists in the `whatchureading-data` Docker volume. `docker compose down` keeps the volume; back it up before removing or migrating it.
+
+### Kubernetes
+
+Build and push the image to a registry reachable by your cluster, then change `image` in [`deploy/kubernetes.yaml`](deploy/kubernetes.yaml) to that image. Create the auth secret from your private env file and apply the included PVC, single-replica Deployment, and ClusterIP Service:
+
+```sh
+docker build -t registry.example.com/whatchureading:latest .
+docker push registry.example.com/whatchureading:latest
+kubectl create secret generic whatchureading-auth --from-env-file=.env.selfhost
+kubectl apply -f deploy/kubernetes.yaml
+```
+
+Expose the Service through your own ingress or gateway and configure Supabase with that public origin. Use volume snapshots or another SQLite-safe backup method for the `whatchureading-data` claim. Do not scale this Deployment above one replica: the app uses a local SQLite database, not a shared multi-writer database.
+
+Both self-hosted options run the same API and frontend as the default Cloudflare deployment. They use the separate [`wrangler.selfhost.jsonc`](wrangler.selfhost.jsonc) configuration and the persistent local runtime state. The standard [`wrangler.example.jsonc`](wrangler.example.jsonc), `npm run setup`, D1 migrations, and `npm run deploy` remain the path for the project hosted on Cloudflare.
+
 ## Features
 
 - Book-page signup/login flow with continuous page flipping while the app loads.

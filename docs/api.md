@@ -11,7 +11,7 @@ D1 exclusively stores application users/metadata and reading data. Supabase stor
 | GET | `/auth/config` | Public `{url,publishableKey}` for the auth client; no privileged keys |
 | GET | `/health` | Rust runtime health and version |
 | GET | `/bootstrap` | reader_id, profile, books, library, notes, likes, recommendations, attributes |
-| PUT | `/library` | `{book_id,status:"reading"\|"want"\|"read",page,rating?:1..5,review?:string}`. Replaces shelf fields; include current rating/review to preserve them. Finished forces final page. |
+| PUT | `/library` | `{book_id,status:"reading"\|"want"\|"read"\|"did-not-finish",page,rating?:1..5,review?:string}`. Replaces shelf fields; include current rating/review to preserve them. Finished forces final page. |
 | DELETE | `/library` | `{book_id}`. Removes shelf entry and swipe; preserves notes. |
 | POST | `/notes` | `{book_id,page,body,spoiler?:boolean}`. Page-anchored thought. |
 | POST | `/swipes` | `{book_id,action:"skip"\|"want"\|"read"}`. Saves choice and adds to shelf when appropriate. |
@@ -20,6 +20,7 @@ D1 exclusively stores application users/metadata and reading data. Supabase stor
 | POST | `/likes` | `{activity_id:"maya"\|"james"\|"sophie"\|"leo",liked:boolean}` |
 | GET | `/search?q=...` | Open Library search (2–150 chars), up to 12 results. |
 | POST | `/books/import` | `{key:"/works/OL...W",title,author,pages,cover_id}`. Imports metadata; returns `{id}`. |
+| POST | `/import/goodreads` | `{records:[{goodreads_book_id,title,author,status,pages,rating,average_rating,isbn,review,started_at,finished_at,history}]}`. Imports a user-selected Goodreads CSV preview into the authenticated reader; accepts up to 2,000 records and is idempotent for existing reader-book rows. |
 
 Progress is pages rather than percentages so web and mobile calculate the same timeline. Reviews allow 5,000 characters, thoughts 2,000. SQL is parameterized. D1 enforces unique auth subjects; batches update swipe/shelf records atomically. Genre attributes are playful inferred metrics, not ability scores. Discovery scores are an explicit heuristic, not a trained recommendation model.
 

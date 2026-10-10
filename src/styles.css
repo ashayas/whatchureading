@@ -1809,7 +1809,15 @@ select {
   position: relative;
 }
 .page-heading > .primary,
-.page-heading > .outline { white-space: nowrap; }
+.page-heading > .outline,
+.page-heading-actions > .primary,
+.page-heading-actions > .outline { white-space: nowrap; }
+.page-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 .import-lede { max-width: 520px; }
 .goodreads-steps { display: grid; gap: 10px; margin: 24px 0 18px; }
 .goodreads-step { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcf6; }
@@ -2027,6 +2035,71 @@ input::placeholder {
 }
 .thought-marker:hover {
   color: #4a6c36;
+}
+.pdf-reader {
+  position: relative;
+  display: flex;
+  gap: 6px;
+  margin: 20px 0 4px;
+}
+.pdf-reader-scroll {
+  flex: 1;
+  min-width: 0;
+  height: 60vh;
+  max-height: 560px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #f3f4ec;
+  padding: 16px;
+  scroll-behavior: smooth;
+}
+.pdf-page {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
+}
+.pdf-page canvas {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  background: #fff;
+}
+.pdf-reader-loading,
+.pdf-reader-error {
+  text-align: center;
+  color: #8a9183;
+  padding: 40px 0;
+}
+.pdf-reader-rail {
+  position: relative;
+  width: 20px;
+  flex-shrink: 0;
+}
+.pdf-reader-rail .thought-marker {
+  position: absolute;
+  left: 0;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+.thought-visibility {
+  display: flex;
+  gap: 6px;
+  margin: 10px 0;
+}
+.thought-visibility button {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: #6b7260;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.thought-visibility button.active {
+  background: #466836;
+  border-color: #466836;
+  color: #fff;
 }
 .timeline-labels {
   display: flex;
@@ -2689,12 +2762,15 @@ input::placeholder {
     max-width: 300px;
   }
   .page-heading > .primary,
-  .page-heading > .outline {
+  .page-heading > .outline,
+  .page-heading-actions > .primary,
+  .page-heading-actions > .outline {
     font-size: 0;
     gap: 0;
     padding: 10px;
   }
-  .page-heading > button svg {
+  .page-heading > button svg,
+  .page-heading-actions > button svg {
     width: 18px;
   }
   .hero {

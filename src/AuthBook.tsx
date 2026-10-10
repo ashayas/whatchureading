@@ -15,7 +15,8 @@ import { api, type Bootstrap } from "./types";
 import "./auth-book.css";
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-type Stage = "email" | "password" | "confirm" | "reset-sent" | "recovery";
+type Stage =
+  "email" | "username" | "password" | "confirm" | "reset-sent" | "recovery";
 export function BookLoading({ leaving = false }: { leaving?: boolean }) {
   return (
     <BookFrame loading leaving={leaving}>
@@ -58,6 +59,10 @@ function BookFrame({
         <img src="/logo.png" alt="" />
         whatchureading<span>®</span>
       </a>
+      <div className="auth-promise" aria-label="About whatchureading">
+        <strong>Free. Open-source. Own your own chapter.</strong>
+        <span>No Amazon. No ads.</span>
+      </div>
       <div className={`auth-book ${loading ? "is-fluttering" : ""}`}>
         <div className="auth-back-cover" />
         <section className="auth-left-page" aria-label="Welcome">
@@ -232,7 +237,18 @@ export function AuthRoot({
     setData(null);
     setError("");
     setLeaving(false);
-    Promise.all([api<Bootstrap>("bootstrap"), pause(800), prepareApp()])
+    Promise.all([
+      (async () => {
+        const pendingUsername = localStorage.getItem("wcr.pending-username");
+        if (pendingUsername) {
+          await api("username", "PUT", { username: pendingUsername });
+          localStorage.removeItem("wcr.pending-username");
+        }
+        return api<Bootstrap>("bootstrap");
+      })(),
+      pause(800),
+      prepareApp(),
+    ])
       .then(async ([next]) => {
         if (!active) return;
         setLeaving(true);
@@ -264,6 +280,15 @@ export function AuthRoot({
             <em>again.</em>
           </h1>
           <p role="alert">{error || "Your connection needs a moment."}</p>
+          {session && error.toLowerCase().includes("username") && (
+            <UsernameClaimRecovery
+              initial={localStorage.getItem("wcr.pending-username") || ""}
+              onClaimed={() => {
+                setError("");
+                setRetry((n) => n + 1);
+              }}
+            />
+          )}
           <button
             className="auth-primary"
             onClick={() => {
@@ -294,6 +319,56 @@ export function AuthRoot({
     />
   );
 }
+function UsernameClaimRecovery({
+  initial,
+  onClaimed,
+}: {
+  initial: string;
+  onClaimed: () => void;
+}) {
+  const [username, setUsername] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await api("username", "PUT", { username });
+      localStorage.removeItem("wcr.pending-username");
+      onClaimed();
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "Could not save that username.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form onSubmit={submit} aria-label="Choose a username">
+      <label htmlFor="username-recovery">Choose an available username</label>
+      <input
+        id="username-recovery"
+        value={username}
+        onChange={(event) => setUsername(event.target.value)}
+        minLength={3}
+        maxLength={20}
+        pattern="[A-Za-z0-9_]{3,20}"
+        autoComplete="nickname"
+        required
+      />
+      {error && (
+        <p className="auth-error" role="alert">
+          {error}
+        </p>
+      )}
+      <button className="auth-primary" disabled={busy} type="submit">
+        {busy ? "Saving…" : "Save username"} <ArrowRight size={18} />
+      </button>
+    </form>
+  );
+}
 function AuthForm({
   client,
   recovery,
@@ -308,6 +383,11 @@ function AuthForm({
   const [stage, setStage] = useState<Stage>(recovery ? "recovery" : "email");
   const [mode, setMode] = useState<"signup" | "signin">("signup");
   const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
+  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(
+    null,
+  );
+  const [checkingUsername, setCheckingUsername] = useState(false);
   const [password, setPassword] = useState("");
   const [visible, setVisible] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -320,6 +400,35 @@ function AuthForm({
   useEffect(() => {
     input.current?.focus({ preventScroll: true });
   }, [stage, busy, turning]);
+  useEffect(() => {
+    if (mode !== "signup" || stage !== "username") return;
+    const value = username.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(value)) {
+      setUsernameAvailable(null);
+      setCheckingUsername(false);
+      return;
+    }
+    let active = true;
+    setCheckingUsername(true);
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `/api/v1/username-available?username=${encodeURIComponent(value)}`,
+        );
+        const result = (await response.json()) as { available?: boolean };
+        if (active)
+          setUsernameAvailable(response.ok && result.available === true);
+      } catch {
+        if (active) setUsernameAvailable(null);
+      } finally {
+        if (active) setCheckingUsername(false);
+      }
+    }, 250);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [username, mode, stage]);
   async function turn(next: Stage) {
     if (turning) return;
     setError("");
@@ -335,6 +444,14 @@ function AuthForm({
     event.preventDefault();
     setError("");
     if (stage === "email") {
+      await turn(mode === "signup" ? "username" : "password");
+      return;
+    }
+    if (stage === "username") {
+      if (usernameAvailable !== true || checkingUsername) {
+        setError("Choose an available username before continuing.");
+        return;
+      }
       await turn("password");
       return;
     }
@@ -349,11 +466,15 @@ function AuthForm({
       }
       const result =
         mode === "signup"
-          ? await client.auth.signUp({
+          ? (localStorage.setItem(
+              "wcr.pending-username",
+              username.trim().toLowerCase(),
+            ),
+            await client.auth.signUp({
               email: email.trim(),
               password,
               options: { emailRedirectTo: callbackUrl() },
-            })
+            }))
           : await client.auth.signInWithPassword({
               email: email.trim(),
               password,
@@ -362,6 +483,7 @@ function AuthForm({
       setPassword("");
       if (!result.data.session) await turn("confirm");
     } catch (e) {
+      if (mode === "signup") localStorage.removeItem("wcr.pending-username");
       setError(
         e instanceof Error ? e.message : "Could not sign in. Please try again.",
       );
@@ -403,7 +525,14 @@ function AuthForm({
                   : "WELCOME BACK"}
           </span>
           <span className="auth-step-count">
-            {stage === "email" ? "01" : messageStep ? "03" : "02"} / 03
+            {stage === "email"
+              ? "01"
+              : messageStep
+                ? "03"
+                : stage === "username"
+                  ? "02"
+                  : "03"}{" "}
+            / 03
           </span>
         </div>
         <div className="auth-progress" aria-hidden="true">
@@ -454,6 +583,8 @@ function AuthForm({
             ) : (
               "Your books, your thoughts, your place. Right where you left them."
             )
+          ) : stage === "username" ? (
+            "Choose the name your friends will use to find you."
           ) : mode === "signup" ? (
             "One last thing. Give your reading life a little privacy."
           ) : (
@@ -489,7 +620,18 @@ function AuthForm({
                   : "Sign in"
             }
           >
-            {passwordStep && stage !== "recovery" && (
+            {stage === "password" && mode === "signup" && (
+              <button
+                type="button"
+                className="auth-email-receipt"
+                onClick={() => void turn("username")}
+              >
+                <ArrowLeft size={14} />
+                <span>@{username}</span>
+                <small>Edit</small>
+              </button>
+            )}
+            {passwordStep && stage !== "recovery" && mode === "signin" && (
               <button
                 type="button"
                 className="auth-email-receipt"
@@ -501,38 +643,76 @@ function AuthForm({
               </button>
             )}
             <label htmlFor="auth-input">
-              {passwordStep
-                ? stage === "recovery"
-                  ? "New password"
-                  : "Your password"
-                : "Your email"}
+              {stage === "username"
+                ? "Your username"
+                : passwordStep
+                  ? stage === "recovery"
+                    ? "New password"
+                    : "Your password"
+                  : "Your email"}
             </label>
             <div className="auth-input-wrap">
               <input
                 ref={input}
                 id="auth-input"
-                name={passwordStep ? "password" : "email"}
-                type={passwordStep ? (visible ? "text" : "password") : "email"}
-                value={passwordStep ? password : email}
+                name={
+                  stage === "username"
+                    ? "username"
+                    : passwordStep
+                      ? "password"
+                      : "email"
+                }
+                type={
+                  stage === "username"
+                    ? "text"
+                    : passwordStep
+                      ? visible
+                        ? "text"
+                        : "password"
+                      : "email"
+                }
+                value={
+                  stage === "username"
+                    ? username
+                    : passwordStep
+                      ? password
+                      : email
+                }
                 onChange={(e) =>
-                  passwordStep
-                    ? setPassword(e.target.value)
-                    : setEmail(e.target.value)
+                  stage === "username"
+                    ? setUsername(e.target.value)
+                    : passwordStep
+                      ? setPassword(e.target.value)
+                      : setEmail(e.target.value)
                 }
                 autoComplete={
                   passwordStep
                     ? mode === "signup" || stage === "recovery"
                       ? "new-password"
                       : "current-password"
-                    : "email"
+                    : stage === "username"
+                      ? "nickname"
+                      : "email"
                 }
-                placeholder={passwordStep ? "••••••••••" : "you@somewhere.com"}
+                placeholder={
+                  stage === "username"
+                    ? "yourname"
+                    : passwordStep
+                      ? "••••••••••"
+                      : "you@somewhere.com"
+                }
                 minLength={
-                  passwordStep && (mode === "signup" || stage === "recovery")
-                    ? 8
-                    : undefined
+                  stage === "username"
+                    ? 3
+                    : passwordStep &&
+                        (mode === "signup" || stage === "recovery")
+                      ? 8
+                      : undefined
                 }
-                maxLength={passwordStep ? 128 : 254}
+                maxLength={stage === "username" ? 20 : passwordStep ? 128 : 254}
+                pattern={
+                  stage === "username" ? "[A-Za-z0-9_]{3,20}" : undefined
+                }
                 required
                 disabled={turning}
                 aria-describedby={
@@ -550,6 +730,19 @@ function AuthForm({
                 </button>
               )}
             </div>
+            {stage === "username" && (
+              <small className="auth-hint" aria-live="polite">
+                {checkingUsername
+                  ? "Checking availability…"
+                  : username.length < 3
+                    ? "3–20 characters: letters, numbers, and underscores."
+                    : usernameAvailable === true
+                      ? "That username is available."
+                      : usernameAvailable === false
+                        ? "That username is taken."
+                        : "Enter 3–20 letters, numbers, or underscores."}
+              </small>
+            )}
             {passwordStep && (
               <small id="auth-hint" className="auth-hint">
                 {mode === "signup" || stage === "recovery"
@@ -562,14 +755,24 @@ function AuthForm({
                 {error}
               </p>
             )}
-            <button className="auth-primary" disabled={turning} type="submit">
+            <button
+              className="auth-primary"
+              disabled={
+                turning ||
+                (stage === "username" &&
+                  (checkingUsername || usernameAvailable !== true))
+              }
+              type="submit"
+            >
               {stage === "email"
                 ? "Turn the page"
-                : stage === "recovery"
-                  ? "Save new password"
-                  : mode === "signup"
-                    ? "Begin my story"
-                    : "Open my book"}
+                : stage === "username"
+                  ? "Use this username"
+                  : stage === "recovery"
+                    ? "Save new password"
+                    : mode === "signup"
+                      ? "Begin my story"
+                      : "Open my book"}
               <ArrowRight size={18} />
             </button>
             {stage === "password" && mode === "signin" && (

@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    image: whatchureading:local
+    restart: unless-stopped
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:?Set SUPABASE_URL in your environment}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:?Set SUPABASE_PUBLISHABLE_KEY in your environment}
+      PORT: "8787"
+      DATA_DIR: /data
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - whatchureading-data:/data
+
+volumes:
+  whatchureading-data:
