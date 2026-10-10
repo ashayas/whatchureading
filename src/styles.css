@@ -3337,3 +3337,48 @@ input::placeholder {
     );
   }
 }
+.group-progress-list,
+.group-comments,
+.group-member-list,
+.group-past-picks,
+.group-pick-matches {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 0;
+}
+.group-progress-list li,
+.group-member-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+}
+.group-comments li,
+.group-past-picks li {
+  font-size: 13px;
+  color: #4c5844;
+}
+.group-comments li.muted {
+  color: #93a083;
+  font-style: italic;
+}
+.group-pick-matches button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f2f4e9;
+  font-size: 13px;
+  text-align: left;
+}
+.group-pick-matches button span {
+  color: #778665;
+  font-size: 11px;
+}

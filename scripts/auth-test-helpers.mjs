@@ -159,6 +159,10 @@ export async function cleanupTestUsers() {
       .join("\n") +
     `\nDELETE FROM reader_friends WHERE reader_id IN ${readerIds} OR friend_id IN ${readerIds};` +
     `\nDELETE FROM books WHERE uploader_reader_id IN ${readerIds};` +
+    `\nDELETE FROM group_pick_comments WHERE reader_id IN ${readerIds} OR pick_id IN (SELECT id FROM group_picks WHERE group_id IN (SELECT id FROM groups WHERE created_by IN ${readerIds}));` +
+    `\nDELETE FROM group_picks WHERE selected_by IN ${readerIds} OR group_id IN (SELECT id FROM groups WHERE created_by IN ${readerIds});` +
+    `\nDELETE FROM group_members WHERE reader_id IN ${readerIds} OR group_id IN (SELECT id FROM groups WHERE created_by IN ${readerIds});` +
+    `\nDELETE FROM groups WHERE created_by IN ${readerIds};` +
     `\nDELETE FROM readers WHERE supabase_user_id IN (${ids});`;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "wcr-auth-cleanup-"));
   const file = path.join(dir, "cleanup.sql");

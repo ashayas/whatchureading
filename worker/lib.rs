@@ -356,6 +356,50 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             return reply(json!({"profile":profile,"library":library,"notes":notes}), 200);
         }
     }
+    if method == Method::Get && path == "/api/v1/groups/mine" {
+        let groups = rows(&db, "SELECT g.id,g.name,g.description,g.created_by,(SELECT COUNT(*) FROM group_members gm2 WHERE gm2.group_id=g.id) AS member_count,gp.id AS pick_id,gp.book_id AS pick_book_id,b.title AS pick_title,b.author AS pick_author FROM group_members gm JOIN groups g ON g.id=gm.group_id LEFT JOIN group_picks gp ON gp.group_id=g.id AND gp.ends_at IS NULL LEFT JOIN books b ON b.id=gp.book_id WHERE gm.reader_id=? ORDER BY g.created_at DESC", vec![arg(id)]).await?;
+        return reply(json!({"groups":groups}), 200);
+    }
+    if method == Method::Get {
+        if let Some(group_id) = path.strip_prefix("/api/v1/groups/") {
+            if !group_id.is_empty() && !group_id.contains('/') {
+                let member = db
+                    .prepare("SELECT role FROM group_members WHERE group_id=? AND reader_id=?")
+                    .bind(&[arg(group_id), arg(id)])?
+                    .first::<Value>(None)
+                    .await?;
+                let Some(member) = member else {
+                    return reply(json!({"error":"Group not found"}), 404);
+                };
+                let group = db
+                    .prepare("SELECT * FROM groups WHERE id=?")
+                    .bind(&[arg(group_id)])?
+                    .first::<Value>(None)
+                    .await?;
+                let Some(group) = group else {
+                    return reply(json!({"error":"Group not found"}), 404);
+                };
+                let members = rows(&db, "SELECT gm.reader_id,gm.role,r.name,r.username FROM group_members gm JOIN readers r ON r.id=gm.reader_id WHERE gm.group_id=? ORDER BY gm.role,r.name", vec![arg(group_id)]).await?;
+                let current_pick = db.prepare("SELECT gp.id,gp.book_id,gp.starts_at,gp.selected_by,b.title,b.author,b.pages FROM group_picks gp JOIN books b ON b.id=gp.book_id WHERE gp.group_id=? AND gp.ends_at IS NULL")
+                    .bind(&[arg(group_id)])?
+                    .first::<Value>(None)
+                    .await?;
+                let mut progress: Vec<Value> = Vec::new();
+                let mut comments: Vec<Value> = Vec::new();
+                if let Some(pick) = &current_pick {
+                    let pick_book_id = text(pick, "book_id");
+                    progress = rows(&db, "SELECT gm.reader_id,r.name,l.status,l.page FROM group_members gm JOIN readers r ON r.id=gm.reader_id LEFT JOIN library l ON l.reader_id=gm.reader_id AND l.book_id=? WHERE gm.group_id=? ORDER BY r.name", vec![arg(pick_book_id), arg(group_id)]).await?;
+                    let pick_id = text(pick, "id");
+                    comments = rows(&db, "SELECT c.id,c.body,c.created_at,c.reader_id,r.name FROM group_pick_comments c JOIN readers r ON r.id=c.reader_id WHERE c.pick_id=? ORDER BY c.created_at", vec![arg(pick_id)]).await?;
+                }
+                let past_picks = rows(&db, "SELECT gp.id,gp.book_id,gp.starts_at,gp.ends_at,b.title,b.author FROM group_picks gp JOIN books b ON b.id=gp.book_id WHERE gp.group_id=? AND gp.ends_at IS NOT NULL ORDER BY gp.starts_at DESC", vec![arg(group_id)]).await?;
+                return reply(
+                    json!({"group":group,"role":text(&member,"role"),"members":members,"current_pick":current_pick,"progress":progress,"comments":comments,"past_picks":past_picks}),
+                    200,
+                );
+            }
+        }
+    }
     if method == Method::Get && path == "/api/v1/uploads/mine" {
         let mine = rows(
             &db,
@@ -667,6 +711,152 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             .run()
             .await?;
         return reply(json!({"ok":true}), 200);
+    }
+    if path == "/api/v1/groups" && method == Method::Post {
+        let name = text(&v, "name").trim();
+        let description = text(&v, "description").trim();
+        if name.is_empty() || name.len() > 100 || description.len() > 500 {
+            return bad("Enter a group name (up to 100 characters)");
+        }
+        let group_id = Uuid::new_v4().to_string();
+        db.batch(vec![
+            db.prepare("INSERT INTO groups(id,name,description,created_by) VALUES (?,?,?,?)")
+                .bind(&[arg(&group_id), arg(name), arg(description), arg(id)])?,
+            db.prepare("INSERT INTO group_members(group_id,reader_id,role) VALUES (?,?,'owner')")
+                .bind(&[arg(&group_id), arg(id)])?,
+        ])
+        .await?;
+        return reply(json!({"id":group_id}), 201);
+    }
+    if method == Method::Post {
+        if let Some(group_id) = path
+            .strip_prefix("/api/v1/groups/")
+            .and_then(|p| p.strip_suffix("/members"))
+        {
+            let role = db
+                .prepare("SELECT role FROM group_members WHERE group_id=? AND reader_id=?")
+                .bind(&[arg(group_id), arg(id)])?
+                .first::<Value>(None)
+                .await?;
+            let Some(role) = role else {
+                return reply(json!({"error":"Group not found"}), 404);
+            };
+            if text(&role, "role") != "owner" {
+                return reply(json!({"error":"Only the group owner can add members"}), 403);
+            }
+            let username = text(&v, "username").trim().to_ascii_lowercase();
+            let reader = db
+                .prepare("SELECT id FROM readers WHERE username=?")
+                .bind(&[arg(&username)])?
+                .first::<Value>(None)
+                .await?;
+            let Some(reader) = reader else {
+                return bad("No reader found with that username");
+            };
+            let new_member = text(&reader, "id").to_string();
+            db.prepare("INSERT OR IGNORE INTO group_members(group_id,reader_id) VALUES (?,?)")
+                .bind(&[arg(group_id), arg(&new_member)])?
+                .run()
+                .await?;
+            return reply(json!({"ok":true}), 200);
+        }
+        if let Some(group_id) = path
+            .strip_prefix("/api/v1/groups/")
+            .and_then(|p| p.strip_suffix("/pick"))
+        {
+            let role = db
+                .prepare("SELECT role FROM group_members WHERE group_id=? AND reader_id=?")
+                .bind(&[arg(group_id), arg(id)])?
+                .first::<Value>(None)
+                .await?;
+            let Some(role) = role else {
+                return reply(json!({"error":"Group not found"}), 404);
+            };
+            if text(&role, "role") != "owner" {
+                return reply(json!({"error":"Only the group owner can set the pick"}), 403);
+            }
+            let pick_book_id = text(&v, "book_id");
+            let picked = db
+                .prepare("SELECT id FROM books WHERE id=?")
+                .bind(&[arg(pick_book_id)])?
+                .first::<Value>(None)
+                .await?;
+            if picked.is_none() {
+                return bad("Book not found");
+            }
+            let pick_id = Uuid::new_v4().to_string();
+            db.batch(vec![
+                db.prepare("UPDATE group_picks SET ends_at=CURRENT_TIMESTAMP WHERE group_id=? AND ends_at IS NULL")
+                    .bind(&[arg(group_id)])?,
+                db.prepare("INSERT INTO group_picks(id,group_id,book_id,selected_by) VALUES (?,?,?,?)")
+                    .bind(&[arg(&pick_id), arg(group_id), arg(pick_book_id), arg(id)])?,
+            ])
+            .await?;
+            return reply(json!({"id":pick_id}), 201);
+        }
+        if let Some(group_id) = path
+            .strip_prefix("/api/v1/groups/")
+            .and_then(|p| p.strip_suffix("/comments"))
+        {
+            let member = db
+                .prepare("SELECT 1 AS ok FROM group_members WHERE group_id=? AND reader_id=?")
+                .bind(&[arg(group_id), arg(id)])?
+                .first::<Value>(None)
+                .await?;
+            if member.is_none() {
+                return reply(json!({"error":"Group not found"}), 404);
+            }
+            let pick = db
+                .prepare("SELECT id FROM group_picks WHERE group_id=? AND ends_at IS NULL")
+                .bind(&[arg(group_id)])?
+                .first::<Value>(None)
+                .await?;
+            let Some(pick) = pick else {
+                return bad("This group doesn't have a current pick yet");
+            };
+            let comment_body = text(&v, "body").trim();
+            if comment_body.is_empty() || comment_body.len() > 2000 {
+                return bad("A comment needs text, up to 2000 characters");
+            }
+            let pick_id = text(&pick, "id").to_string();
+            let comment_id = Uuid::new_v4().to_string();
+            db.prepare("INSERT INTO group_pick_comments(id,pick_id,reader_id,body) VALUES (?,?,?,?)")
+                .bind(&[arg(&comment_id), arg(&pick_id), arg(id), arg(comment_body)])?
+                .run()
+                .await?;
+            return reply(json!({"ok":true,"id":comment_id}), 201);
+        }
+    }
+    if method == Method::Delete {
+        if let Some(group_id) = path
+            .strip_prefix("/api/v1/groups/")
+            .and_then(|p| p.strip_suffix("/members"))
+        {
+            let requested_target = text(&v, "reader_id");
+            let target = if requested_target.is_empty() {
+                id
+            } else {
+                requested_target
+            };
+            if target != id {
+                let role = db
+                    .prepare("SELECT role FROM group_members WHERE group_id=? AND reader_id=?")
+                    .bind(&[arg(group_id), arg(id)])?
+                    .first::<Value>(None)
+                    .await?;
+                if role.map(|r| text(&r, "role").to_string()).as_deref() != Some("owner") {
+                    return reply(
+                        json!({"error":"Only the group owner can remove other members"}),
+                        403,
+                    );
+                }
+            }
+            db.prepare("DELETE FROM group_members WHERE group_id=? AND reader_id=?")
+                .bind(&[arg(group_id), arg(target)])?
+                .run()
+                .await?;
+            return reply(json!({"ok":true}), 200);
+        }
     }
     let book_id = text(&v, "book_id");
     let book = db

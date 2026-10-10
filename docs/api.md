@@ -27,6 +27,13 @@ D1 exclusively stores application users/metadata and reading data. Supabase stor
 | GET | `/covers/:cover_id` | Proxies an Open Library cover image through this Worker's edge cache (no auth; `cover_id` must be digits only). Caches both hits and misses so repeat requests for the same cover never re-hit Open Library. |
 | POST | `/books/import` | `{key:"/works/OL...W",title,author,pages,cover_id}`. Imports metadata; returns `{id}`. |
 | POST | `/import/goodreads` | `{records:[{goodreads_book_id,title,author,status,pages,rating,average_rating,isbn,review,started_at,finished_at,history}]}`. Imports a user-selected Goodreads CSV preview into the authenticated reader; accepts up to 2,000 records and is idempotent for existing reader-book rows. |
+| POST | `/groups` | `{name,description?}`. Creates a group with the caller as its owner. |
+| GET | `/groups/mine` | Groups the reader belongs to, each with a member count and its current pick (if any). |
+| GET | `/groups/:id` | Member-only (404 otherwise): group, caller's role, members, current pick with per-member reading progress, opinions on the current pick, and past picks. |
+| POST | `/groups/:id/members` | `{username}`. Owner-only; adds a reader by username. |
+| DELETE | `/groups/:id/members` | `{reader_id?}`. Omit `reader_id` to leave; the owner can remove any other member. |
+| POST | `/groups/:id/pick` | `{book_id}`. Owner-only. A group is a book club exactly when it has a current pick — closes any existing pick into history and starts a new one. |
+| POST | `/groups/:id/comments` | `{body}`. Member-only opinion on the group's current pick; 400 if the group has no current pick. |
 
 Progress is pages rather than percentages so web and mobile calculate the same timeline. Reviews allow 5,000 characters, thoughts 2,000. SQL is parameterized. D1 enforces unique auth subjects; batches update swipe/shelf records atomically. Genre attributes are playful inferred metrics, not ability scores. Discovery scores are an explicit heuristic, not a trained recommendation model.
 

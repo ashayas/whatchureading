@@ -20,15 +20,17 @@ import {
   Sparkles,
   Star,
   Users,
+  UsersRound,
   Wind,
   X,
 } from "lucide-react";
-import type { Book, Bootstrap, FriendProfile, LibraryItem, NoteVisibility, PaperTopic, Shelf, Thought } from "./types";
+import type { Book, Bootstrap, FriendProfile, GroupDetail, GroupSummary, LibraryItem, NoteVisibility, PaperTopic, Shelf, Thought } from "./types";
 import { api, apiUploadPdf, PAPER_TOPICS, RATING_THRESHOLD } from "./types";
 import { authClient, signOut } from "./auth";
 import { PdfReader, loadPdfjs } from "./PdfReader";
 
-type Page = "feed" | "friends" | "discover" | "library" | "papers" | "profile";
+type Page = "feed" | "friends" | "discover" | "library" | "papers" | "groups" | "profile";
+const PAGES: readonly string[] = ["feed", "friends", "discover", "library", "papers", "groups", "profile"];
 type GoodreadsImportRecord = {
   goodreads_book_id: string;
   title: string;
@@ -64,6 +66,7 @@ const nav = [
   { id: "discover", name: "Discover", icon: Compass },
   { id: "library", name: "Your library", icon: Library },
   { id: "papers", name: "Your papers", icon: GraduationCap },
+  { id: "groups", name: "Groups", icon: UsersRound },
   { id: "profile", name: "Your profile", icon: Users },
 ] as const;
 function Cover({
@@ -372,7 +375,7 @@ const demoActivities = [
 export default function App({ initialData }: { initialData: Bootstrap }) {
   const [data, setData] = useState<Bootstrap>(initialData);
   const [page, setPage] = useState<Page>(() =>
-    ["feed", "friends", "discover", "library", "papers", "profile"].includes(location.hash.slice(1))
+    PAGES.includes(location.hash.slice(1))
       ? (location.hash.slice(1) as Page)
       : "feed",
   );
@@ -395,7 +398,37 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
       initialData.library.length === 0 && localStorage.getItem("wcr.goodreads-onboarding-seen") !== "1",
     ),
     [uploadOpen, setUploadOpen] = useState<false | "book" | "paper">(false);
+  const [groups, setGroups] = useState<GroupSummary[] | null>(null),
+    [groupsLoading, setGroupsLoading] = useState(false),
+    [groupDetail, setGroupDetail] = useState<GroupDetail | null>(null),
+    [groupDetailLoading, setGroupDetailLoading] = useState(false),
+    [createGroupOpen, setCreateGroupOpen] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  async function loadGroups() {
+    setGroupsLoading(true);
+    try {
+      setGroups((await api<{ groups: GroupSummary[] }>("groups/mine")).groups);
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setGroupsLoading(false);
+    }
+  }
+  async function openGroup(groupId: string) {
+    setGroupDetailLoading(true);
+    setGroupDetail(null);
+    try {
+      setGroupDetail(await api<GroupDetail>(`groups/${encodeURIComponent(groupId)}`));
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setGroupDetailLoading(false);
+    }
+  }
+  async function refreshGroupDetail() {
+    if (groupDetail) await openGroup(groupDetail.group.id);
+    await loadGroups();
+  }
   async function refresh() {
     const next = await api<Bootstrap>("bootstrap");
     setData(next);
@@ -407,9 +440,13 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     };
   }, []);
   useEffect(() => {
+    if (page === "groups" && groups === null) void loadGroups();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
+  useEffect(() => {
     const change = () => {
       const h = location.hash.slice(1);
-      if (["feed", "friends", "discover", "library", "papers", "profile"].includes(h))
+      if (PAGES.includes(h))
         setPage(h as Page);
     };
     addEventListener("hashchange", change);
@@ -1524,6 +1561,56 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
             </>
           )}
 
+          {page === "groups" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">READ TOGETHER</span>
+                  <h1>
+                    Your groups<span>.</span>
+                  </h1>
+                  <p>
+                    See what everyone's reading. Pick a book, and everyone has their say.
+                  </p>
+                </div>
+                <div className="page-heading-actions">
+                  <button className="primary" onClick={() => setCreateGroupOpen(true)}>
+                    <Plus size={17} /> Create a group
+                  </button>
+                </div>
+              </div>
+              <div className="book-grid">
+                {groupsLoading && !groups && <p>Loading your groups…</p>}
+                {(groups || []).map((g) => (
+                  <article className="shelf-book" key={g.id}>
+                    <span className="eyebrow">
+                      {g.member_count} {g.member_count === 1 ? "member" : "members"}
+                    </span>
+                    <h3>
+                      <button onClick={() => void openGroup(g.id)}>{g.name}</button>
+                    </h3>
+                    <p>{g.description || "No description yet."}</p>
+                    {g.pick_title ? (
+                      <small>
+                        Currently reading <b>{g.pick_title}</b> by {g.pick_author}
+                      </small>
+                    ) : (
+                      <small>No current pick yet</small>
+                    )}
+                  </article>
+                ))}
+                {groups?.length === 0 && (
+                  <Empty
+                    title="Start a group"
+                    text="Invite friends, see who's reading what, and pick a book everyone reads together."
+                    action={() => setCreateGroupOpen(true)}
+                    label="Create a group"
+                  />
+                )}
+              </div>
+            </>
+          )}
+
           {page === "profile" && (
             <>
               <div className="page-heading">
@@ -1809,6 +1896,23 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           refresh={refresh}
           notify={notify}
           defaultKind={uploadOpen}
+        />
+      )}
+      {createGroupOpen && (
+        <CreateGroupModal
+          close={() => setCreateGroupOpen(false)}
+          reload={loadGroups}
+          notify={notify}
+        />
+      )}
+      {(groupDetail || groupDetailLoading) && (
+        <GroupModal
+          detail={groupDetail}
+          loading={groupDetailLoading}
+          books={data.books}
+          notify={notify}
+          close={() => setGroupDetail(null)}
+          reload={refreshGroupDetail}
         />
       )}
       {toast && (
@@ -2241,6 +2345,319 @@ function UploadModal({
               Add to library <ArrowRight size={16} />
             </>
           )}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+function CreateGroupModal({
+  close,
+  reload,
+  notify,
+}: {
+  close: () => void;
+  reload: () => Promise<void>;
+  notify: (msg: string) => void;
+}) {
+  const [name, setName] = useState(""),
+    [description, setDescription] = useState(""),
+    [busy, setBusy] = useState(false);
+  async function submit() {
+    setBusy(true);
+    try {
+      await api("groups", "POST", { name: name.trim(), description: description.trim() });
+      await reload();
+      notify("Group created");
+      close();
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal close={close}>
+      <span className="eyebrow">READ TOGETHER</span>
+      <h2>Start a group.</h2>
+      <p className="import-lede">
+        Name it, describe it, and invite friends by username once it exists.
+      </p>
+      <label>
+        Group name
+        <input
+          value={name}
+          maxLength={100}
+          required
+          onChange={(e) => setName(e.target.value)}
+        />
+      </label>
+      <label>
+        Description
+        <textarea
+          placeholder="What's this group about?"
+          maxLength={500}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <div className="modal-actions">
+        <button className="outline" onClick={close}>
+          Cancel
+        </button>
+        <button className="primary" disabled={!name.trim() || busy} onClick={() => void submit()}>
+          {busy ? (
+            <>
+              <Loader2 className="spin" size={16} /> Creating…
+            </>
+          ) : (
+            <>
+              Create group <ArrowRight size={16} />
+            </>
+          )}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+function GroupModal({
+  detail,
+  loading,
+  books,
+  notify,
+  close,
+  reload,
+}: {
+  detail: GroupDetail | null;
+  loading: boolean;
+  books: Book[];
+  notify: (msg: string) => void;
+  close: () => void;
+  reload: () => Promise<void>;
+}) {
+  const [username, setUsername] = useState(""),
+    [pickQuery, setPickQuery] = useState(""),
+    [commentBody, setCommentBody] = useState(""),
+    [busy, setBusy] = useState(false);
+  async function run(action: () => Promise<unknown>, message?: string): Promise<boolean> {
+    setBusy(true);
+    try {
+      await action();
+      await reload();
+      if (message) notify(message);
+      return true;
+    } catch (e) {
+      notify((e as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (loading || !detail) {
+    return (
+      <Modal close={close}>
+        <p>Loading group…</p>
+      </Modal>
+    );
+  }
+  const isOwner = detail.role === "owner";
+  const pickMatches =
+    pickQuery.trim().length > 1
+      ? books
+          .filter((b) => b.title.toLowerCase().includes(pickQuery.trim().toLowerCase()))
+          .slice(0, 8)
+      : [];
+  return (
+    <Modal close={close} wide>
+      <span className="eyebrow">{isOwner ? "YOU OWN THIS GROUP" : "GROUP"}</span>
+      <h2>{detail.group.name}</h2>
+      <p className="import-lede">{detail.group.description || "No description yet."}</p>
+
+      <div className="section-heading">
+        <h3>Current pick</h3>
+      </div>
+      {detail.current_pick ? (
+        <>
+          <p>
+            <b>{detail.current_pick.title}</b> by {detail.current_pick.author}
+          </p>
+          <ul className="group-progress-list">
+            {detail.progress.map((p) => (
+              <li key={p.reader_id}>
+                <span>{p.name}</span>
+                <span>
+                  {p.status
+                    ? `${p.status}${p.page != null ? ` · page ${p.page}` : ""}`
+                    : "hasn't started"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : (
+        <p>No current pick yet.</p>
+      )}
+      {isOwner && (
+        <label>
+          {detail.current_pick ? "Pick a new book" : "Pick a book"}
+          <input
+            placeholder="Search your library and uploads"
+            value={pickQuery}
+            onChange={(e) => setPickQuery(e.target.value)}
+          />
+        </label>
+      )}
+      {isOwner && pickMatches.length > 0 && (
+        <ul className="group-pick-matches">
+          {pickMatches.map((b) => (
+            <li key={b.id}>
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  if (
+                    await run(
+                      () => api(`groups/${detail.group.id}/pick`, "POST", { book_id: b.id }),
+                      `${b.title} is the new pick`,
+                    )
+                  )
+                    setPickQuery("");
+                }}
+              >
+                {b.title} <span>{b.author}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {detail.current_pick && (
+        <>
+          <div className="section-heading">
+            <h3>Opinions</h3>
+          </div>
+          <ul className="group-comments">
+            {detail.comments.map((c) => (
+              <li key={c.id}>
+                <b>{c.name}</b> {c.body}
+              </li>
+            ))}
+            {!detail.comments.length && <li className="muted">No opinions yet. Be the first.</li>}
+          </ul>
+          <form
+            className="thought-form"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              if (
+                await run(
+                  () => api(`groups/${detail.group.id}/comments`, "POST", { body: commentBody }),
+                  "Opinion added",
+                )
+              )
+                setCommentBody("");
+            }}
+          >
+            <label>
+              Your take
+              <textarea
+                placeholder="What do you think so far?"
+                maxLength={2000}
+                required
+                value={commentBody}
+                onChange={(e) => setCommentBody(e.target.value)}
+              />
+            </label>
+            <button className="primary" disabled={busy}>
+              Post <MessageCircle size={15} />
+            </button>
+          </form>
+        </>
+      )}
+
+      <div className="section-heading">
+        <h3>Members</h3>
+      </div>
+      <ul className="group-member-list">
+        {detail.members.map((m) => (
+          <li key={m.reader_id}>
+            <span>
+              {m.name} {m.role === "owner" && <span className="eyebrow">OWNER</span>}
+            </span>
+            {isOwner && m.role !== "owner" && (
+              <button
+                className="auth-text-button"
+                disabled={busy}
+                onClick={() =>
+                  void run(
+                    () =>
+                      api(`groups/${detail.group.id}/members`, "DELETE", {
+                        reader_id: m.reader_id,
+                      }),
+                    `${m.name} removed`,
+                  )
+                }
+              >
+                Remove
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {isOwner && (
+        <form
+          className="thought-form"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (
+              await run(
+                () => api(`groups/${detail.group.id}/members`, "POST", { username: username.trim() }),
+                "Member added",
+              )
+            )
+              setUsername("");
+          }}
+        >
+          <label>
+            Add by username
+            <input value={username} required onChange={(e) => setUsername(e.target.value)} />
+          </label>
+          <button className="primary" disabled={busy}>
+            Add member <Plus size={15} />
+          </button>
+        </form>
+      )}
+
+      {detail.past_picks.length > 0 && (
+        <>
+          <div className="section-heading">
+            <h3>Past picks</h3>
+          </div>
+          <ul className="group-past-picks">
+            {detail.past_picks.map((p) => (
+              <li key={p.id}>
+                {p.title} by {p.author}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      <div className="modal-actions">
+        <button
+          className="outline"
+          disabled={busy}
+          onClick={async () => {
+            if (
+              await run(
+                () => api(`groups/${detail.group.id}/members`, "DELETE", {}),
+                "You left the group",
+              )
+            )
+              close();
+          }}
+        >
+          Leave group
+        </button>
+        <button className="primary" onClick={close}>
+          Done
         </button>
       </div>
     </Modal>

@@ -297,3 +297,86 @@ try {
 } finally {
   await cleanupTestUsers();
 }
+try {
+  const owner = await createTestUser();
+  const member = await createTestUser();
+  const outsider = await createTestUser();
+  async function req(path, method, body, token) {
+    const r = await fetch(base + "/api/v1/" + path, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: r.status, data: await r.json() };
+  }
+  const memberUsername = `member_${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`;
+  assert.equal((await req("username", "PUT", { username: memberUsername }, member.token)).status, 200);
+  const memberBoot = await req("bootstrap", "GET", undefined, member.token);
+  const memberReaderId = memberBoot.data.reader_id;
+
+  let r = await req("groups", "POST", { name: "Book Club", description: "Monthly picks" }, owner.token);
+  assert.equal(r.status, 201);
+  const groupId = r.data.id;
+
+  // Only a member can see group details.
+  r = await req(`groups/${groupId}`, "GET", undefined, outsider.token);
+  assert.equal(r.status, 404);
+  r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.role, "owner");
+  assert.equal(r.data.members.length, 1);
+  assert.equal(r.data.current_pick, null);
+
+  // A non-member can't even tell the group exists via this route.
+  r = await req(`groups/${groupId}/members`, "POST", { username: memberUsername }, outsider.token);
+  assert.equal(r.status, 404);
+  r = await req(`groups/${groupId}/members`, "POST", { username: memberUsername }, owner.token);
+  assert.equal(r.status, 200);
+  r = await req(`groups/${groupId}`, "GET", undefined, member.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.members.length, 2);
+
+  // A member (now that they're one) still isn't the owner.
+  r = await req(`groups/${groupId}/members`, "POST", { username: "someoneelse" }, member.token);
+  assert.equal(r.status, 403);
+
+  // A non-owner cannot set the pick; posting an opinion before a pick exists fails.
+  r = await req(`groups/${groupId}/pick`, "POST", { book_id: "midnight" }, member.token);
+  assert.equal(r.status, 403);
+  r = await req(`groups/${groupId}/comments`, "POST", { body: "early opinion" }, member.token);
+  assert.equal(r.status, 400);
+  r = await req(`groups/${groupId}/pick`, "POST", { book_id: "midnight" }, owner.token);
+  assert.equal(r.status, 201);
+
+  // The member's reading progress on the pick shows up in the group view.
+  assert.equal((await req("library", "PUT", { book_id: "midnight", status: "reading", page: 42 }, member.token)).status, 200);
+  r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
+  assert.equal(r.status, 200);
+  assert.equal(r.data.current_pick.book_id, "midnight");
+  assert.equal(r.data.progress.find((p) => p.status === "reading")?.page, 42);
+
+  // Opinions attach to the current pick and are visible to the whole group.
+  r = await req(`groups/${groupId}/comments`, "POST", { body: "Loving it so far" }, member.token);
+  assert.equal(r.status, 201);
+  r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
+  assert.equal(r.data.comments.some((c) => c.body === "Loving it so far"), true);
+
+  // Picking a new book closes out the old pick into history.
+  r = await req(`groups/${groupId}/pick`, "POST", { book_id: "crawdads" }, owner.token);
+  assert.equal(r.status, 201);
+  r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
+  assert.equal(r.data.current_pick.book_id, "crawdads");
+  assert.equal(r.data.past_picks.some((p) => p.book_id === "midnight"), true);
+
+  // A member can leave; the owner can remove members; a non-owner cannot remove others.
+  r = await req(`groups/${groupId}/members`, "DELETE", { reader_id: memberReaderId }, outsider.token);
+  assert.equal(r.status, 403);
+  r = await req(`groups/${groupId}/members`, "DELETE", {}, member.token);
+  assert.equal(r.status, 200);
+  r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
+  assert.equal(r.data.members.length, 1);
+
+  console.log("PASS: groups — membership, owner-only picks, progress visibility, opinions, and pick history.");
+} finally {
+  await cleanupTestUsers();
+}

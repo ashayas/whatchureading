@@ -78,6 +78,62 @@ export interface FriendProfile {
   >;
   notes: Array<Thought & { title: string; author: string }>;
 }
+export type GroupRole = "owner" | "member";
+export interface GroupSummary {
+  id: string;
+  name: string;
+  description: string;
+  created_by: string;
+  member_count: number;
+  pick_id: string | null;
+  pick_book_id: string | null;
+  pick_title: string | null;
+  pick_author: string | null;
+}
+export interface GroupMember {
+  reader_id: string;
+  role: GroupRole;
+  name: string;
+  username: string | null;
+}
+export interface GroupPick {
+  id: string;
+  book_id: string;
+  starts_at: string;
+  ends_at?: string | null;
+  selected_by?: string;
+  title: string;
+  author: string;
+  pages?: number;
+}
+export interface GroupProgress {
+  reader_id: string;
+  name: string;
+  status: Shelf | null;
+  page: number | null;
+}
+export interface GroupComment {
+  id: string;
+  body: string;
+  created_at: string;
+  reader_id: string;
+  name: string;
+}
+export interface GroupDetail {
+  group: {
+    id: string;
+    name: string;
+    description: string;
+    created_by: string;
+    created_at: string;
+  };
+  role: GroupRole;
+  members: GroupMember[];
+  current_pick: GroupPick | null;
+  progress: GroupProgress[];
+  comments: GroupComment[];
+  past_picks: GroupPick[];
+}
 export interface Bootstrap {
   reader_id: string;
   profile: { name: string; username?: string | null; goal: number };
