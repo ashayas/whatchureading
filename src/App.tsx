@@ -1744,7 +1744,7 @@ function GoodreadsImportModal({
       ? "Automatic import is connected. Sign in to Goodreads and we’ll bring your export back here…"
       : "Opening Goodreads. You can export manually, or install the browser helper for automatic import…");
     window.postMessage({ type: "WCR_GOODREADS_START", importId }, "*");
-    window.open("https://www.goodreads.com/review/import", "_blank", "noopener,noreferrer");
+    if (!bridgeAvailable) window.open("https://www.goodreads.com/review/import", "_blank", "noopener,noreferrer");
   };
   const chooseFile = async (file?: File) => {
     if (!file) return;

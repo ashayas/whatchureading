@@ -30,15 +30,21 @@
     }
     throw new Error("Goodreads did not finish generating the export.");
   }
+  async function waitForExportButton() {
+    const deadline = Date.now() + 15 * 60 * 1000;
+    while (Date.now() < deadline) {
+      const button = document.querySelector("button.js-LibraryExport");
+      if (button && !button.disabled) return button;
+      status("Waiting for you to finish signing in to Goodreads…");
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+    }
+    throw new Error("Goodreads sign-in timed out.");
+  }
   async function run() {
     session = await chrome.runtime.sendMessage({ type: "GET_GOODREADS_SESSION" });
     if (!session?.importId) return;
     status("Waiting for Goodreads to be ready…");
-    const button = document.querySelector("button.js-LibraryExport");
-    if (!button) {
-      status("Please sign in to Goodreads, then return here…");
-      return;
-    }
+    const button = await waitForExportButton();
     if (!exported) {
       exported = true;
       status("Getting your Goodreads library…");

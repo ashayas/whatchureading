@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "whatchureading Goodreads bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Moves a user-authorized Goodreads library export to the open whatchureading import screen.",
   "permissions": ["storage", "tabs"],
   "host_permissions": ["https://www.goodreads.com/*", "https://whatchureading.com/*", "https://www.whatchureading.com/*"],
