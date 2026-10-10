@@ -9,6 +9,7 @@ artifacts/
 !.env.example
 .dev.vars*
 wrangler.jsonc
+browser.wrangler.jsonc
 worker-configuration.d.ts
 AGENTS.md
 src/catalog.json

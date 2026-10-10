@@ -4,13 +4,13 @@
   "main": "browser-worker/index.ts",
   "compatibility_date": "2026-10-10",
   "compatibility_flags": ["nodejs_compat"],
-  "account_id": "REDACTED-CF-ACCOUNT-ID",
+  "account_id": "YOUR_CLOUDFLARE_ACCOUNT_ID",
   "browser": { "binding": "BROWSER" },
   "d1_databases": [{
     "binding": "DB",
     "database_name": "whatchureading-db",
-    "database_id": "REDACTED-CF-D1-DATABASE-ID",
+    "database_id": "YOUR_D1_DATABASE_ID",
     "migrations_dir": "migrations"
   }],
-  "routes": [{ "pattern": "browser.whatchureading.com", "custom_domain": true }]
+  "routes": [{ "pattern": "browser.example.com", "custom_domain": true }]
 }

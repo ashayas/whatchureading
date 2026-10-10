@@ -7,6 +7,15 @@ type Env = {
   AUTH_SUPABASE_KEY: string;
 };
 
+async function disconnectConnection(browser: any) {
+  // Browser Run's Playwright client exposes disconnect at runtime even though
+  // older package typings do not include it. Unlike close(), disconnect keeps
+  // the remote session and its tabs alive for the next request / Live View.
+  if (typeof browser?.disconnect === "function") {
+    await browser.disconnect();
+  }
+}
+
 const allowedOrigins = new Set(["https://whatchureading.com", "https://www.whatchureading.com"]);
 const jsonHeaders = { "Content-Type": "application/json", "Cache-Control": "no-store" };
 
@@ -18,7 +27,7 @@ function response(body: unknown, status = 200, origin = "") {
     headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
     headers.set("Vary", "Origin");
   }
-  return new Response(JSON.stringify(body), { status, headers });
+  return new Response(status === 204 ? null : JSON.stringify(body), { status, headers });
 }
 
 async function readerFor(request: Request, env: Env) {
@@ -42,10 +51,6 @@ async function readerFor(request: Request, env: Env) {
   return reader.id;
 }
 
-async function closeConnection(browser: any) {
-  try { await browser.close(); } catch { /* the remote session may already be gone */ }
-}
-
 async function start(request: Request, env: Env, origin: string) {
   const readerId = await readerFor(request, env);
   const importId = crypto.randomUUID();
@@ -64,7 +69,7 @@ async function start(request: Request, env: Env, origin: string) {
       .bind(importId, readerId, sessionId, "awaiting_login").run();
     return response({ import_id: importId, live_view_url: devtoolsFrontendUrl }, 200, origin);
   } finally {
-    await closeConnection(browser);
+    await disconnectConnection(browser);
   }
 }
 
@@ -110,7 +115,7 @@ async function status(request: Request, env: Env, importId: string, origin: stri
       .bind(message.slice(0, 500), importId).run();
     return response({ status: "error", error: message }, 200, origin);
   } finally {
-    if (browser) await closeConnection(browser);
+    await disconnectConnection(browser);
   }
 }
 
