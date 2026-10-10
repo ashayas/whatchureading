@@ -6,7 +6,6 @@ import {
   Bookmark,
   Check,
   ChevronRight,
-  Cloud,
   Compass,
   ExternalLink,
   FileSpreadsheet,
@@ -1694,14 +1693,6 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                 rel="noreferrer"
               >
                 Books via Open Library
-              </a>
-              <span className="footer-dot">·</span>
-              <a
-                href="https://workers.cloudflare.com"
-                target="_blank"
-                rel="noreferrer"
-              >
-                <Cloud size={12} /> Running on Cloudflare Workers
               </a>
               <span className="footer-dot">·</span>
               <a
