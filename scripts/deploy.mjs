@@ -12,3 +12,4 @@ execFileSync("npx", ["wrangler", "secret", "bulk"], {
   stdio: ["pipe", "inherit", "inherit"],
 });
 execFileSync("npx", ["wrangler", "deploy"], { stdio: "inherit" });
+execFileSync("npm", ["run", "deploy:browser"], { stdio: "inherit" });

@@ -12,12 +12,14 @@
     "db:local": "node scripts/config-check.mjs && wrangler d1 migrations apply DB --local",
     "db:remote": "node scripts/config-check.mjs && wrangler d1 migrations apply DB --remote",
     "deploy": "node scripts/deploy.mjs",
+    "deploy:browser": "node scripts/deploy-browser.mjs",
     "test": "cargo test",
     "test:integration": "node scripts/integration.mjs",
     "build:api": "worker-build --release",
     "test:browser": "node scripts/browser.mjs",
     "format": "prettier --write src scripts vite.config.ts",
     "setup": "node scripts/setup.mjs",
+    "selfhost": "node scripts/selfhost-entry.mjs",
     "check:public": "node scripts/check-public.mjs"
   },
   "dependencies": {
@@ -28,6 +30,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",
+    "@cloudflare/playwright": "^1.3.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",

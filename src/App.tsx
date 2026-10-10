@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import type { Book, Bootstrap, FriendProfile, LibraryItem, Shelf, Thought } from "./types";
 import { api } from "./types";
-import { signOut } from "./auth";
+import { authClient, signOut } from "./auth";
 
 type Page = "feed" | "friends" | "discover" | "library" | "profile";
 type GoodreadsImportRecord = {
@@ -42,6 +42,20 @@ type GoodreadsImportRecord = {
   description: string;
   history: Record<string, unknown>;
 };
+const GOODREADS_BROWSER_URL = "https://browser.whatchureading.com";
+async function browserApi<T = unknown>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const client = await authClient();
+  const { data: { session } } = await client.auth.getSession();
+  if (!session) throw new Error("Please sign in to continue.");
+  const response = await fetch(`${GOODREADS_BROWSER_URL}/api/${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${session.access_token}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await response.json() as T & { error?: string };
+  if (!response.ok) throw new Error(data.error || "Could not open the Goodreads browser.");
+  return data as T;
+}
 const nav = [
   { id: "feed", name: "The feed", icon: BookOpen },
   { id: "friends", name: "Friends", icon: Users },
@@ -1740,32 +1754,50 @@ function GoodreadsImportModal({
   const [importing, setImporting] = useState(false);
   const [complete, setComplete] = useState(false);
   const [bridgeStatus, setBridgeStatus] = useState("");
-  const [bridgeAvailable, setBridgeAvailable] = useState(false);
-  const [importId] = useState(() => crypto.randomUUID());
+  const [browserViewUrl, setBrowserViewUrl] = useState("");
+  const [browserImportId, setBrowserImportId] = useState("");
   useEffect(() => {
-    const receive = (event: MessageEvent) => {
-      const message = event.data;
-      if (message?.source === "wcr-goodreads-bridge" && message.type === "WCR_GOODREADS_BRIDGE_READY") {
-        setBridgeAvailable(true);
-        return;
-      }
-      if (message?.source !== "wcr-goodreads-bridge" || message.importId !== importId) return;
-      if (message.type === "WCR_GOODREADS_PROGRESS") setBridgeStatus(String(message.status || "Working through Goodreads…"));
-      if (message.type === "WCR_GOODREADS_DATA" && typeof message.csv === "string") {
-        setBridgeStatus("Your export is ready. Review the books below before importing.");
-        void chooseFile(new File([message.csv], "goodreads_export.csv", { type: "text/csv" }));
+    if (!browserImportId) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const result = await browserApi<{ status: string; csv?: string; error?: string }>(`status/${browserImportId}`);
+        if (cancelled) return;
+        if (result.status === "awaiting_login") setBridgeStatus("Sign in inside the Goodreads window. We’ll continue automatically…");
+        else if (result.status === "exporting") setBridgeStatus("Goodreads is preparing your library export…");
+        else if (result.status === "ready" && result.csv) {
+          setBridgeStatus("Your books are here. Review the import before adding anything.");
+          await chooseFile(new File([result.csv], "goodreads_library_export.csv", { type: "text/csv" }));
+          void browserApi(`close/${browserImportId}`, "POST");
+          setBrowserImportId("");
+        } else if (result.status === "error") {
+          setError(result.error || "Goodreads could not finish the export.");
+          setBrowserImportId("");
+        }
+      } catch (error) {
+        if (!cancelled) setError((error as Error).message);
       }
     };
-    addEventListener("message", receive);
-    postMessage({ type: "WCR_GOODREADS_PING" }, "*");
-    return () => removeEventListener("message", receive);
-  }, [importId]);
-  const connectGoodreads = () => {
-    setBridgeStatus(bridgeAvailable
-      ? "Automatic import is connected. Sign in to Goodreads and we’ll bring your export back here…"
-      : "Opening Goodreads. You can export manually, or install the browser helper for automatic import…");
-    window.postMessage({ type: "WCR_GOODREADS_START", importId }, "*");
-    if (!bridgeAvailable) window.open("https://www.goodreads.com/review/import", "_blank", "noopener,noreferrer");
+    void poll();
+    const timer = window.setInterval(() => void poll(), 2500);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [browserImportId]);
+  const connectGoodreads = async () => {
+    setError("");
+    setBridgeStatus("Opening your private Goodreads browser…");
+    try {
+      const result = await browserApi<{ import_id: string; live_view_url: string }>("start", "POST", {});
+      setBrowserImportId(result.import_id);
+      setBrowserViewUrl(result.live_view_url);
+      setBridgeStatus("Sign in inside the Goodreads window. We’ll handle the export from there.");
+    } catch (error) {
+      setError((error as Error).message);
+      setBridgeStatus("");
+    }
+  };
+  const dismiss = () => {
+    if (browserImportId) void browserApi(`close/${browserImportId}`, "POST");
+    close();
   };
   const chooseFile = async (file?: File) => {
     if (!file) return;
@@ -1828,19 +1860,20 @@ function GoodreadsImportModal({
   };
   const counts = records.reduce<Record<string, number>>((all, record) => ({ ...all, [record.status]: (all[record.status] || 0) + 1 }), {});
   return (
-    <Modal close={close} wide>
+      <Modal close={dismiss} wide>
       {!complete ? (
         <>
           <span className="eyebrow">A LITTLE HELP FROM YOUR OLD BOOKSHELF</span>
           <h2>Bring your Goodreads library home.</h2>
-          <p className="import-lede">Your Goodreads login stays with Goodreads. We only need the library file you choose to share.</p>
+          <p className="import-lede">Sign in inside a private Goodreads browser. Your password stays with Goodreads, and we only bring back the export you authorize.</p>
           <div className="goodreads-steps">
-            <div className="goodreads-step"><span>1</span><div><b>{bridgeAvailable ? "Connect Goodreads automatically" : "Connect Goodreads"}</b><small>{bridgeAvailable ? "We’ll open Goodreads in your browser, wait for your sign-in, and return the export here." : "We’ll open Goodreads so you can sign in there. Your password stays with Goodreads."}</small></div><button className="outline" onClick={connectGoodreads}>{bridgeAvailable ? "Start automatic import" : "Open Goodreads"} <ExternalLink size={14} /></button></div>
-            <div className="goodreads-step"><span>2</span><div><b>{bridgeAvailable ? "We’ll export your library" : "Export your library"}</b><small>{bridgeAvailable ? "The browser helper clicks Goodreads’ visible Export Library control after you sign in." : "Choose Export Library, then wait for the CSV link to appear."}</small></div></div>
-            <div className="goodreads-step"><span>3</span><div><b>{bridgeAvailable ? "Review and import" : "Drop the CSV here"}</b><small>{bridgeAvailable ? "We’ll preview everything and add only books you haven’t imported yet." : "We preview everything before anything is added."}</small></div></div>
+            <div className="goodreads-step"><span>1</span><div><b>Open your Goodreads browser</b><small>A private browser window opens right here for your Goodreads sign-in.</small></div><button className="outline" onClick={() => void connectGoodreads}>Start import <ExternalLink size={14} /></button></div>
+            <div className="goodreads-step"><span>2</span><div><b>Sign in and we’ll export</b><small>After you sign in, the browser handles Goodreads’ visible library export.</small></div></div>
+            <div className="goodreads-step"><span>3</span><div><b>Review and import</b><small>We preview everything and add only books you haven’t imported yet.</small></div></div>
           </div>
           {bridgeStatus && <p className="import-bridge-status" role="status"><Wind size={14} /> {bridgeStatus}</p>}
-          {bridgeAvailable && bridgeStatus && !records.length && <GoodreadsImportAnimation status={bridgeStatus} />}
+          {browserImportId && bridgeStatus && !records.length && <GoodreadsImportAnimation status={bridgeStatus} />}
+          {browserViewUrl && browserImportId && <div className="goodreads-browser-view"><iframe src={browserViewUrl} title="Private Goodreads browser" allow="clipboard-read; clipboard-write" /><a href={browserViewUrl} target="_blank" rel="noreferrer">Open browser in a new tab <ExternalLink size={13} /></a></div>}
           <label className="goodreads-dropzone">
             <FileSpreadsheet size={28} />
             <b>{fileName || "Choose your Goodreads CSV"}</b>
@@ -1849,10 +1882,10 @@ function GoodreadsImportModal({
           </label>
           {error && <p className="import-error" role="alert">{error}</p>}
           {records.length > 0 && <div className="import-preview"><b>{records.length} books ready</b><span>{counts.read || 0} read · {counts.reading || 0} reading · {counts.want || 0} to read{counts["did-not-finish"] ? ` · ${counts["did-not-finish"]} did not finish` : ""}</span></div>}
-          <div className="modal-actions"><button className="outline" onClick={close}>Cancel</button><button className="primary" disabled={!records.length || importing} onClick={() => void submit()}>{importing ? <><Loader2 className="spin" size={16} /> Bringing them in…</> : <>Import my books <ArrowRight size={16} /></>}</button></div>
+          <div className="modal-actions"><button className="outline" onClick={dismiss}>Cancel</button><button className="primary" disabled={!records.length || importing} onClick={() => void submit()}>{importing ? <><Loader2 className="spin" size={16} /> Bringing them in…</> : <>Import my books <ArrowRight size={16} /></>}</button></div>
         </>
       ) : (
-        <div className="import-complete"><span className="import-check"><Check size={26} /></span><span className="eyebrow">YOUR SHELVES ARE HERE</span><h2>Welcome back, books.</h2><p>{records.length} books are now part of your reading life. You can update any shelf whenever you like.</p><button className="primary" onClick={close}>See my library <ArrowRight size={16} /></button></div>
+          <div className="import-complete"><span className="import-check"><Check size={26} /></span><span className="eyebrow">YOUR SHELVES ARE HERE</span><h2>Welcome back, books.</h2><p>{records.length} books are now part of your reading life. You can update any shelf whenever you like.</p><button className="primary" onClick={dismiss}>See my library <ArrowRight size={16} /></button></div>
       )}
     </Modal>
   );

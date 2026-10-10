@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "whatchureading-browser",
+  "main": "browser-worker/index.ts",
+  "compatibility_date": "2026-10-10",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "REDACTED-CF-ACCOUNT-ID",
+  "browser": { "binding": "BROWSER" },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "whatchureading-db",
+    "database_id": "REDACTED-CF-D1-DATABASE-ID",
+    "migrations_dir": "migrations"
+  }],
+  "routes": [{ "pattern": "browser.whatchureading.com", "custom_domain": true }]
+}
