@@ -206,6 +206,7 @@ try {
     author: "Test Author",
     kind: "paper",
     pages: 3,
+    topic: "Physics & Math",
   }, owner.token);
   assert.equal(r.status, 201);
   const bookId = r.data.id;
@@ -242,6 +243,26 @@ try {
   assert.equal(r.data.books.some((b) => b.id === bookId), true);
   r = await req("uploads/mine", "GET", undefined, owner.token);
   assert.equal(r.data.books.some((b) => b.id === bookId), true);
+  assert.equal(
+    r.data.books.find((b) => b.id === bookId).topic,
+    "Physics & Math",
+  );
+  // A paper upload without a valid topic is rejected.
+  r = await req("uploads", "POST", {
+    title: "Missing Topic",
+    author: "Test Author",
+    kind: "paper",
+    pages: 2,
+  }, owner.token);
+  assert.equal(r.status, 400);
+  // Finishing a paper feeds the paper-specific academic radar, not the book one.
+  r = await req("library", "PUT", { book_id: bookId, status: "read", page: 3 }, owner.token);
+  assert.equal(r.status, 200);
+  r = await req("bootstrap", "GET", undefined, owner.token);
+  assert.equal(
+    r.data.paper_attributes.find((a) => a.label === "Physics & Math").value > 15,
+    true,
+  );
   // Public vs. private notes.
   r = await req(
     "notes",

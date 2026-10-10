@@ -9,6 +9,7 @@ import {
   Compass,
   ExternalLink,
   FileSpreadsheet,
+  GraduationCap,
   Heart,
   Library,
   Loader2,
@@ -22,12 +23,12 @@ import {
   Wind,
   X,
 } from "lucide-react";
-import type { Book, Bootstrap, FriendProfile, LibraryItem, NoteVisibility, Shelf, Thought } from "./types";
-import { api, apiUploadPdf, RATING_THRESHOLD } from "./types";
+import type { Book, Bootstrap, FriendProfile, LibraryItem, NoteVisibility, PaperTopic, Shelf, Thought } from "./types";
+import { api, apiUploadPdf, PAPER_TOPICS, RATING_THRESHOLD } from "./types";
 import { authClient, signOut } from "./auth";
 import { PdfReader, loadPdfjs } from "./PdfReader";
 
-type Page = "feed" | "friends" | "discover" | "library" | "profile";
+type Page = "feed" | "friends" | "discover" | "library" | "papers" | "profile";
 type GoodreadsImportRecord = {
   goodreads_book_id: string;
   title: string;
@@ -62,6 +63,7 @@ const nav = [
   { id: "friends", name: "Friends", icon: Users },
   { id: "discover", name: "Discover", icon: Compass },
   { id: "library", name: "Your library", icon: Library },
+  { id: "papers", name: "Your papers", icon: GraduationCap },
   { id: "profile", name: "Your profile", icon: Users },
 ] as const;
 function Cover({
@@ -258,15 +260,16 @@ function Radar({
   attributes,
   compact = false,
 }: {
-  attributes: Bootstrap["attributes"];
+  attributes: { label: string; value: number }[];
   compact?: boolean;
 }) {
   const cx = 150,
     cy = 132,
     r = 87;
+  const step = (2 * Math.PI) / attributes.length;
   const point = (i: number, scale: number) => [
-    cx + Math.sin((i * Math.PI) / 3) * r * scale,
-    cy - Math.cos((i * Math.PI) / 3) * r * scale,
+    cx + Math.sin(i * step) * r * scale,
+    cy - Math.cos(i * step) * r * scale,
   ];
   const polygon = (scale: number) =>
     attributes.map((_, i) => point(i, scale).join(",")).join(" ");
@@ -369,7 +372,7 @@ const demoActivities = [
 export default function App({ initialData }: { initialData: Bootstrap }) {
   const [data, setData] = useState<Bootstrap>(initialData);
   const [page, setPage] = useState<Page>(() =>
-    ["feed", "friends", "discover", "library", "profile"].includes(location.hash.slice(1))
+    ["feed", "friends", "discover", "library", "papers", "profile"].includes(location.hash.slice(1))
       ? (location.hash.slice(1) as Page)
       : "feed",
   );
@@ -383,14 +386,15 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
   const [feedFilter, setFeedFilter] = useState("Everyone"),
     [shelf, setShelf] = useState<Shelf>("reading"),
     [genre, setGenre] = useState("All books"),
-    [swipeDir, setSwipeDir] = useState("");
+    [swipeDir, setSwipeDir] = useState(""),
+    [paperTopic, setPaperTopic] = useState<PaperTopic | "All">("All");
   const [settings, setSettings] = useState(false),
     [name, setName] = useState(""),
     [goal, setGoal] = useState(24),
     [goodreadsImportOpen, setGoodreadsImportOpen] = useState(() =>
       initialData.library.length === 0 && localStorage.getItem("wcr.goodreads-onboarding-seen") !== "1",
     ),
-    [uploadOpen, setUploadOpen] = useState(false);
+    [uploadOpen, setUploadOpen] = useState<false | "book" | "paper">(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   async function refresh() {
     const next = await api<Bootstrap>("bootstrap");
@@ -405,7 +409,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
   useEffect(() => {
     const change = () => {
       const h = location.hash.slice(1);
-      if (["feed", "friends", "discover", "library", "profile"].includes(h))
+      if (["feed", "friends", "discover", "library", "papers", "profile"].includes(h))
         setPage(h as Page);
     };
     addEventListener("hashchange", change);
@@ -461,6 +465,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     finished = data.library.filter((l) => l.status === "read"),
     wanted = data.library.filter((l) => l.status === "want"),
     didNotFinish = data.library.filter((l) => l.status === "did-not-finish");
+  const papers = data.books.filter((b) => b.kind === "paper");
   const totalPages = data.library.reduce((sum, l) => sum + l.page, 0);
   const recommendations = data.recommendations.filter(
     (b) => genre === "All books" || b.genre === genre,
@@ -1279,7 +1284,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   </p>
                 </div>
                 <div className="page-heading-actions">
-                  <button className="outline" onClick={() => setUploadOpen(true)}>
+                  <button className="outline" onClick={() => setUploadOpen("book")}>
                     <Plus size={17} /> Upload a PDF
                   </button>
                   <button className="primary" onClick={() => setSearchOpen(true)}>
@@ -1427,6 +1432,95 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   )}
                 </div>
               )}
+            </>
+          )}
+
+          {page === "papers" && (
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">AREAS OF ACADEMIC LEARNING</span>
+                  <h1>
+                    Your papers<span>.</span>
+                  </h1>
+                  <p>
+                    Arxiv preprints, journal articles, anything with a bibliography.
+                  </p>
+                </div>
+                <div className="page-heading-actions">
+                  <button className="primary" onClick={() => setUploadOpen("paper")}>
+                    <Plus size={17} /> Upload a paper
+                  </button>
+                </div>
+              </div>
+              <section className="profile-dna">
+                <span className="eyebrow">YOUR ACADEMIC CARD</span>
+                <h2>Fields you're exploring.</h2>
+                <p>Scored from the papers you're reading and have finished.</p>
+                <Radar attributes={data.paper_attributes} />
+                <div className="attribute-list">
+                  {data.paper_attributes.map((a) => (
+                    <span key={a.label}>
+                      <span>{a.label}</span>
+                      <b>{a.value}</b>
+                    </span>
+                  ))}
+                </div>
+                <small>
+                  A playful portrait, based on the topics of papers you read.
+                  Scores grow as you explore; they aren't a measure of expertise.
+                </small>
+              </section>
+              <div className="library-tabs">
+                {(["All", ...PAPER_TOPICS] as const).map((t) => (
+                  <button
+                    className={paperTopic === t ? "active" : ""}
+                    key={t}
+                    onClick={() => setPaperTopic(t)}
+                  >
+                    {t}
+                    <span>
+                      {t === "All"
+                        ? papers.length
+                        : papers.filter((p) => p.topic === t).length}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <div className="book-grid">
+                {papers
+                  .filter((p) => paperTopic === "All" || p.topic === paperTopic)
+                  .map((p) => {
+                    const item = data.library.find((l) => l.book_id === p.id);
+                    return (
+                      <article className="shelf-book" key={p.id}>
+                        <Cover book={p} onClick={() => setSelected(p)} />
+                        <span className="eyebrow">{p.topic}</span>
+                        <h3>
+                          <button onClick={() => setSelected(p)}>
+                            {p.title}
+                          </button>
+                        </h3>
+                        <p>{p.author}</p>
+                        {item && (
+                          <small>
+                            Page {item.page} of {p.pages} ·{" "}
+                            {Math.round((item.page / Math.max(p.pages, 1)) * 100)}%
+                            through
+                          </small>
+                        )}
+                      </article>
+                    );
+                  })}
+                {!papers.length && (
+                  <Empty
+                    title="Your first paper starts here"
+                    text="Upload a PDF — an arXiv preprint, a journal article, anything with a bibliography."
+                    action={() => setUploadOpen("paper")}
+                    label="Upload a paper"
+                  />
+                )}
+              </div>
             </>
           )}
 
@@ -1706,6 +1800,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           close={() => setUploadOpen(false)}
           refresh={refresh}
           notify={notify}
+          defaultKind={uploadOpen}
         />
       )}
       {toast && (
@@ -1987,15 +2082,18 @@ function UploadModal({
   close,
   refresh,
   notify,
+  defaultKind = "book",
 }: {
   close: () => void;
   refresh: () => Promise<Bootstrap>;
   notify: (msg: string) => void;
+  defaultKind?: "book" | "paper";
 }) {
   const [file, setFile] = useState<File | null>(null),
     [title, setTitle] = useState(""),
     [author, setAuthor] = useState(""),
-    [kind, setKind] = useState<"book" | "paper">("book"),
+    [kind, setKind] = useState<"book" | "paper">(defaultKind),
+    [topic, setTopic] = useState<PaperTopic>(PAPER_TOPICS[0]),
     [pages, setPages] = useState(0),
     [error, setError] = useState(""),
     [uploading, setUploading] = useState(false);
@@ -2031,6 +2129,7 @@ function UploadModal({
         author: author.trim(),
         kind,
         pages,
+        ...(kind === "paper" ? { topic } : {}),
       });
       await apiUploadPdf(`uploads/${created.id}/content`, "PUT", file);
       await refresh();
@@ -2099,6 +2198,21 @@ function UploadModal({
               onChange={(e) => setAuthor(e.target.value)}
             />
           </label>
+          {kind === "paper" && (
+            <label>
+              Field
+              <select
+                value={topic}
+                onChange={(e) => setTopic(e.target.value as PaperTopic)}
+              >
+                {PAPER_TOPICS.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </>
       )}
       <div className="modal-actions">
@@ -2187,7 +2301,11 @@ function BookModal({
         <Cover book={book} />
         <div>
           <span className="eyebrow">
-            {isUpload ? (book.kind === "paper" ? "PAPER" : "YOUR UPLOAD") : book.genre} ·{" "}
+            {isUpload
+              ? book.kind === "paper"
+                ? (book.topic || "PAPER").toUpperCase()
+                : "YOUR UPLOAD"
+              : book.genre} ·{" "}
             {book.pages} PAGES
           </span>
           <h2>{book.title}</h2>

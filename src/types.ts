@@ -1,6 +1,15 @@
 import { authClient } from "./auth";
 export type Shelf = "reading" | "want" | "read" | "did-not-finish";
 export type BookKind = "catalog" | "book" | "paper";
+export const PAPER_TOPICS = [
+  "Computer Science",
+  "Physics & Math",
+  "Life Sciences",
+  "Social Sciences",
+  "Economics",
+  "Humanities",
+] as const;
+export type PaperTopic = (typeof PAPER_TOPICS)[number];
 export interface Book {
   id: string;
   title: string;
@@ -18,6 +27,7 @@ export interface Book {
   content_key: string | null;
   uploader_reader_id: string | null;
   is_shared: number;
+  topic: PaperTopic | null;
 }
 // Must match RATING_THRESHOLD in worker/lib.rs: how many books a reader must
 // rank before a normalized out-of-5 rating is derived and shown.
@@ -72,6 +82,7 @@ export interface Bootstrap {
   reader_id: string;
   profile: { name: string; username?: string | null; goal: number };
   attributes: { label: string; value: number }[];
+  paper_attributes: { label: string; value: number }[];
   recommendations: Book[];
   books: Book[];
   library: LibraryItem[];

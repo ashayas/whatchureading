@@ -184,6 +184,43 @@ fn genre_attribute(genre: &str) -> usize {
         _ => 5,
     }
 }
+const PAPER_TOPICS: [&str; 6] = [
+    "Computer Science",
+    "Physics & Math",
+    "Life Sciences",
+    "Social Sciences",
+    "Economics",
+    "Humanities",
+];
+fn topic_attribute(topic: &str) -> usize {
+    PAPER_TOPICS.iter().position(|t| *t == topic).unwrap_or(5)
+}
+// A separate radar from the book attributes above: areas of academic learning,
+// scored only from uploaded papers (kind="paper"), never books.
+fn paper_attributes(library: &[Value], books: &[Value]) -> Value {
+    let mut scores = [15i64; 6];
+    for item in library {
+        if matches!(text(item, "status"), "want" | "did-not-finish") {
+            continue;
+        }
+        if let Some(b) = books
+            .iter()
+            .find(|b| b["id"] == item["book_id"] && text(b, "kind") == "paper")
+        {
+            let weight = if text(item, "status") == "read" {
+                18
+            } else {
+                8
+            };
+            scores[topic_attribute(text(b, "topic"))] += weight;
+        }
+    }
+    json!(PAPER_TOPICS
+        .iter()
+        .enumerate()
+        .map(|(i, label)| json!({"label":label,"value":scores[i].min(99)}))
+        .collect::<Vec<_>>())
+}
 fn attributes(library: &[Value], books: &[Value]) -> Value {
     let mut scores = [15i64; 6];
     for item in library {
@@ -355,7 +392,7 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             .first::<Value>(None)
             .await?;
         return reply(
-            json!({"reader_id":id,"profile":profile,"attributes":attributes(&library,&books),"recommendations":recommendations(&books,&library,&swipes),"books":books,"library":library,"notes":notes,"likes":likes,"friends":friends,"demo_friends":false}),
+            json!({"reader_id":id,"profile":profile,"attributes":attributes(&library,&books),"paper_attributes":paper_attributes(&library,&books),"recommendations":recommendations(&books,&library,&swipes),"books":books,"library":library,"notes":notes,"likes":likes,"friends":friends,"demo_friends":false}),
             200,
         );
     }
@@ -555,17 +592,19 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         let author = text(&v, "author").trim();
         let kind = text(&v, "kind");
         let pages = int(&v, "pages");
+        let topic = text(&v, "topic");
         if title.is_empty()
             || title.len() > 250
             || author.len() > 150
             || !["book", "paper"].contains(&kind)
             || !(1..=20000).contains(&pages)
+            || (kind == "paper" && !PAPER_TOPICS.contains(&topic))
         {
-            return bad("Enter a title, author, kind, and valid page count");
+            return bad("Enter a title, author, kind, topic, and valid page count");
         }
         let book_id = Uuid::new_v4().to_string();
         let content_key = format!("uploads/{id}/{book_id}.pdf");
-        db.prepare("INSERT INTO books(id,title,author,genre,pages,rating,isbn,color,friend_count,description,kind,content_key,uploader_reader_id,is_shared) VALUES (?,?,?,'Uncategorized',?,0,'','#6b5b4a',0,'',?,?,?,0)")
+        db.prepare("INSERT INTO books(id,title,author,genre,pages,rating,isbn,color,friend_count,description,kind,content_key,uploader_reader_id,is_shared,topic) VALUES (?,?,?,'Uncategorized',?,0,'','#6b5b4a',0,'',?,?,?,0,?)")
             .bind(&[
                 arg(&book_id),
                 arg(title),
@@ -574,6 +613,7 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
                 arg(kind),
                 arg(&content_key),
                 arg(id),
+                if kind == "paper" { arg(topic) } else { wasm_bindgen::JsValue::NULL },
             ])?
             .run()
             .await?;
@@ -790,6 +830,21 @@ mod tests {
         assert_eq!(library[0]["normalized_rating"], 5.0);
         assert_eq!(library[4]["normalized_rating"], 1.0);
         assert_eq!(library[2]["ranked_total"], 5);
+    }
+    #[test]
+    fn paper_attributes_only_count_papers_by_topic() {
+        let books = vec![
+            json!({"id":"a","kind":"paper","topic":"Physics & Math"}),
+            json!({"id":"b","kind":"book","genre":"Fiction"}),
+        ];
+        let library = vec![
+            json!({"book_id":"a","status":"read"}),
+            json!({"book_id":"b","status":"read"}),
+        ];
+        let result = paper_attributes(&library, &books);
+        assert_eq!(result[1]["label"], "Physics & Math");
+        assert_eq!(result[1]["value"], 33);
+        assert_eq!(result[0]["value"], 15);
     }
     #[test]
     fn attributes_ignore_wishlist_and_cap_scores() {
