@@ -11,9 +11,14 @@ D1 exclusively stores application users/metadata and reading data. Supabase stor
 | GET | `/auth/config` | Public `{url,publishableKey}` for the auth client; no privileged keys |
 | GET | `/health` | Rust runtime health and version |
 | GET | `/bootstrap` | reader_id, profile, books, library, notes, likes, recommendations, attributes |
-| PUT | `/library` | `{book_id,status:"reading"\|"want"\|"read"\|"did-not-finish",page,rating?:1..5,review?:string}`. Replaces shelf fields; include current rating/review to preserve them. Finished forces final page. |
-| DELETE | `/library` | `{book_id}`. Removes shelf entry and swipe; preserves notes. |
-| POST | `/notes` | `{book_id,page,body,spoiler?:boolean}`. Page-anchored thought. |
+| PUT | `/library` | `{book_id,status:"reading"\|"want"\|"read"\|"did-not-finish",page,review?:string}`. Replaces shelf fields; include current review to preserve it. Finished forces final page. Leaving the `read` shelf clears the book's ranking. |
+| PUT | `/library/rank` | `{book_id,rank_position:0..N}`. Inserts/moves a finished book at `rank_position` among the reader's ranked finished books (0 = favorite), shifting the rest. 400 if the book isn't on the `read` shelf. |
+| DELETE | `/library` | `{book_id}`. Removes shelf entry and swipe; preserves notes. Closes any ranking gap it leaves. |
+| POST | `/notes` | `{book_id,page,body,spoiler?:boolean,visibility?:"public"\|"private"}`. Page-anchored thought; defaults to public. Private notes are never shown to friends. |
+| POST | `/uploads` | `{title,author,kind:"book"\|"paper",pages}`. Creates a personal (unshared) book/paper entry for an uploaded PDF; returns `{id,content_key}`. |
+| PUT | `/uploads/:id/content` | Raw PDF bytes (`Content-Type: application/pdf`), owner-only, 40MB limit. |
+| GET | `/uploads/:id/content` | Streams the uploaded PDF back, owner-only. |
+| GET | `/uploads/mine` | Lists the reader's own uploaded books/papers. |
 | POST | `/swipes` | `{book_id,action:"skip"\|"want"\|"read"}`. Saves choice and adds to shelf when appropriate. |
 | POST | `/swipes/reset` | `{}`. Revisit skipped books. |
 | PUT | `/profile` | `{name,goal}`. Name 1–60 chars; goal 1–500. |
@@ -23,6 +28,8 @@ D1 exclusively stores application users/metadata and reading data. Supabase stor
 | POST | `/import/goodreads` | `{records:[{goodreads_book_id,title,author,status,pages,rating,average_rating,isbn,review,started_at,finished_at,history}]}`. Imports a user-selected Goodreads CSV preview into the authenticated reader; accepts up to 2,000 records and is idempotent for existing reader-book rows. |
 
 Progress is pages rather than percentages so web and mobile calculate the same timeline. Reviews allow 5,000 characters, thoughts 2,000. SQL is parameterized. D1 enforces unique auth subjects; batches update swipe/shelf records atomically. Genre attributes are playful inferred metrics, not ability scores. Discovery scores are an explicit heuristic, not a trained recommendation model.
+
+Personal ratings are relative, not a number a reader types in. Finishing a book walks them through "did you like it more than this one?" comparisons against books they already ranked (binary insertion against their existing ranking, so it takes at most `ceil(log2(n+1))` comparisons), and the result is stored as `rank_position` (0 = favorite) rather than a 1-5 score. `/bootstrap` derives a `normalized_rating` (1-5, one decimal) from `rank_position` and the reader's total ranked count, spreading `rank_position` 0..N-1 evenly across 1-5; it is `null` until the reader has ranked at least `RATING_THRESHOLD` (5) books, so the UI can tell readers to keep ranking instead of showing an unstable number. Every library item also carries `ranked_total`. Deleting a book or moving it off the `read` shelf closes the gap it leaves in the reader's ranking.
 
 API and book information docs consulted: [Workers Rust](https://developers.cloudflare.com/workers/languages/rust/), [D1](https://developers.cloudflare.com/d1/worker-api/d1-database/), [Open Library search](https://openlibrary.org/dev/docs/api/search), [Open Library API usage](https://openlibrary.org/developers/api).
 

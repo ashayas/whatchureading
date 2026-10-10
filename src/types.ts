@@ -19,11 +19,16 @@ export interface Book {
   uploader_reader_id: string | null;
   is_shared: number;
 }
+// Must match RATING_THRESHOLD in worker/lib.rs: how many books a reader must
+// rank before a normalized out-of-5 rating is derived and shown.
+export const RATING_THRESHOLD = 5;
 export interface LibraryItem {
   book_id: string;
   status: Shelf;
   page: number;
-  rating: number | null;
+  rank_position: number | null;
+  normalized_rating: number | null;
+  ranked_total: number;
   review: string;
   updated_at: string;
   started_at: string | null;

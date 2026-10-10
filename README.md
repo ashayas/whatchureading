@@ -46,6 +46,7 @@ Both self-hosted options run the same API and frontend as the default Cloudflare
 - Book-page signup/login flow with continuous page flipping while the app loads.
 - Mobile layouts, keyboard/autofill support, safe areas, and reduced-motion animations.
 - Reading, want-to-read, and finished shelves; progress, reviews, and spoiler-aware notes.
+- Relative personal ratings: finishing a book asks "did you like it more than this one?" against books you've already ranked, instead of picking a number. The derived 1-5 rating stays hidden until you've ranked enough books.
 - Swipe discovery and genre-based recommendations; six-axis reading profile.
 - Open Library search/import and covers. Missing page counts are visibly estimated.
 - Clearly labeled fictional friend activity for the POC. Real friendships are not implemented yet.

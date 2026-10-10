@@ -149,6 +149,31 @@ fn valid_username(username: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
 }
+// Readers rank finished books against each other instead of picking a number.
+// A 1-5 rating is only derived, and only shown, once enough books are ranked.
+const RATING_THRESHOLD: i64 = 5;
+fn normalize_ratings(library: &mut [Value]) {
+    let total = library
+        .iter()
+        .filter(|l| l["rank_position"].as_i64().is_some())
+        .count() as i64;
+    for item in library.iter_mut() {
+        let normalized = if total >= RATING_THRESHOLD {
+            item["rank_position"].as_i64().map(|p| {
+                let r = if total > 1 {
+                    5.0 - 4.0 * (p as f64) / ((total - 1) as f64)
+                } else {
+                    5.0
+                };
+                (r * 10.0).round() / 10.0
+            })
+        } else {
+            None
+        };
+        item["normalized_rating"] = json!(normalized);
+        item["ranked_total"] = json!(total);
+    }
+}
 fn genre_attribute(genre: &str) -> usize {
     match genre {
         "Fiction" | "Memoir" => 0,
@@ -177,6 +202,10 @@ fn attributes(library: &[Value], books: &[Value]) -> Value {
     json!([{"label":"Empathy","value":scores[0].min(99)},{"label":"Curiosity","value":scores[1].min(99)},{"label":"Imagination","value":scores[2].min(99)},{"label":"Perspective","value":scores[3].min(99)},{"label":"Growth","value":scores[4].min(99)},{"label":"Creativity","value":scores[5].min(99)}])
 }
 fn recommendations(books: &[Value], library: &[Value], swipes: &[Value]) -> Vec<Value> {
+    let total_ranked = library
+        .iter()
+        .filter(|l| l["rank_position"].as_i64().is_some())
+        .count() as i64;
     let mut result: Vec<Value> = books
         .iter()
         .filter(|b| {
@@ -193,7 +222,11 @@ fn recommendations(books: &[Value], library: &[Value], swipes: &[Value]) -> Vec<
                             .iter()
                             .any(|x| x["id"] == l["book_id"] && x["genre"] == b["genre"])
                 })
-                .map(|l| if int(l, "rating") >= 4 { 18 } else { 10 })
+                .map(|l| match l["rank_position"].as_i64() {
+                    // Top half of a reader's own ranking counts as a favorite.
+                    Some(p) if p < (total_ranked + 1) / 2 => 18,
+                    _ => 10,
+                })
                 .sum();
             let score = (54 + affinity + int(b, "friend_count") * 4).min(98);
             let mut out = b.clone();
@@ -238,7 +271,8 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             }
             let profile = db.prepare("SELECT id,name,goal FROM readers WHERE id=?")
                 .bind(&[arg(friend_id)])?.first::<Value>(None).await?;
-            let library = rows(&db, "SELECT l.*,b.title,b.author,b.genre,b.pages,b.rating AS book_rating,b.isbn,b.color,b.description FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=? ORDER BY CASE l.status WHEN 'reading' THEN 0 WHEN 'did-not-finish' THEN 1 WHEN 'want' THEN 2 ELSE 3 END,l.updated_at DESC,b.title", vec![arg(friend_id)]).await?;
+            let mut library = rows(&db, "SELECT l.*,b.title,b.author,b.genre,b.pages,b.rating AS book_rating,b.isbn,b.color,b.description FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=? ORDER BY CASE l.status WHEN 'reading' THEN 0 WHEN 'did-not-finish' THEN 1 WHEN 'want' THEN 2 ELSE 3 END,l.updated_at DESC,b.title", vec![arg(friend_id)]).await?;
+            normalize_ratings(&mut library);
             let notes = rows(&db, "SELECT n.id,n.book_id,n.page,n.body,n.spoiler,n.created_at,b.title,b.author FROM notes n JOIN books b ON b.id=n.book_id WHERE n.reader_id=? AND n.visibility='public' ORDER BY n.created_at DESC", vec![arg(friend_id)]).await?;
             return reply(json!({"profile":profile,"library":library,"notes":notes}), 200);
         }
@@ -289,12 +323,13 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             vec![arg(id)],
         )
         .await?;
-        let library = rows(
+        let mut library = rows(
             &db,
             "SELECT * FROM library WHERE reader_id=? ORDER BY updated_at DESC",
             vec![arg(id)],
         )
         .await?;
+        normalize_ratings(&mut library);
         let notes = rows(
             &db,
             "SELECT * FROM notes WHERE reader_id=? ORDER BY page",
@@ -445,9 +480,8 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             let author = text(record, "author").trim();
             let status = text(record, "status");
             let pages = int(record, "pages");
-            let rating = record.get("rating").and_then(Value::as_i64);
             let average = record.get("average_rating").and_then(Value::as_f64).unwrap_or(0.0);
-            if source_id.is_empty() || !source_id.chars().all(|c| c.is_ascii_digit()) || title.is_empty() || title.len() > 250 || author.len() > 150 || !["reading", "want", "read", "did-not-finish"].contains(&status) || !(1..=20000).contains(&pages) || rating.is_some_and(|r| !(1..=5).contains(&r)) {
+            if source_id.is_empty() || !source_id.chars().all(|c| c.is_ascii_digit()) || title.is_empty() || title.len() > 250 || author.len() > 150 || !["reading", "want", "read", "did-not-finish"].contains(&status) || !(1..=20000).contains(&pages) {
                 return bad("One Goodreads row is incomplete or invalid");
             }
             let book_id = format!("goodreads-{source_id}");
@@ -459,7 +493,9 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             let history = record.get("history").cloned().unwrap_or_else(|| json!({})).to_string();
             statements.push(db.prepare("INSERT OR IGNORE INTO books(id,title,author,genre,pages,rating,isbn,color,friend_count,description) VALUES (?,?,?,'Uncategorized',?,?,?,'#8f9f70',0,?)").bind(&[arg(&book_id), arg(title), arg(author), num(pages), real(average.clamp(0.0, 5.0)), arg(isbn), arg(description)])?);
             let page = if status == "read" { pages } else { 0 };
-            statements.push(db.prepare("INSERT OR IGNORE INTO library(reader_id,book_id,status,page,rating,review,started_at,finished_at,reading_history) VALUES (?,?,?,?,?,?,?,?,?)").bind(&[arg(id), arg(&book_id), arg(status), num(page), rating.map(num).unwrap_or(wasm_bindgen::JsValue::NULL), arg(review), if started.is_empty() { wasm_bindgen::JsValue::NULL } else { arg(started) }, if finished.is_empty() { wasm_bindgen::JsValue::NULL } else { arg(finished) }, arg(&history)])?);
+            // The imported Goodreads star rating has no equivalent here: ratings are
+            // now derived from a reader's own relative ranking, not an absolute number.
+            statements.push(db.prepare("INSERT OR IGNORE INTO library(reader_id,book_id,status,page,review,started_at,finished_at,reading_history) VALUES (?,?,?,?,?,?,?,?)").bind(&[arg(id), arg(&book_id), arg(status), num(page), arg(review), if started.is_empty() { wasm_bindgen::JsValue::NULL } else { arg(started) }, if finished.is_empty() { wasm_bindgen::JsValue::NULL } else { arg(finished) }, arg(&history)])?);
             imported += 1;
         }
         db.batch(statements).await?;
@@ -562,6 +598,9 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
     let pages = int(&book, "pages");
     if path == "/api/v1/library" && method == Method::Delete {
         db.batch(vec![
+            // Removing a ranked book leaves a gap in the reader's ranking; close it.
+            db.prepare("UPDATE library SET rank_position=rank_position-1 WHERE reader_id=? AND rank_position > (SELECT rank_position FROM library WHERE reader_id=? AND book_id=?)")
+                .bind(&[arg(id), arg(id), arg(book_id)])?,
             db.prepare("DELETE FROM library WHERE reader_id=? AND book_id=?")
                 .bind(&[arg(id), arg(book_id)])?,
             db.prepare("DELETE FROM swipes WHERE reader_id=? AND book_id=?")
@@ -573,15 +612,13 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
     if path == "/api/v1/library" && method == Method::Put {
         let status = text(&v, "status");
         let page = int(&v, "page");
-        let rating = v["rating"].as_i64();
         let review = text(&v, "review");
         if !["reading", "want", "read", "did-not-finish"].contains(&status)
             || page < 0
             || page > pages
             || review.len() > 5000
-            || rating.is_some_and(|r| !(1..=5).contains(&r))
         {
-            return bad("Invalid shelf, page, rating, or review");
+            return bad("Invalid shelf, page, or review");
         }
         let p = if status == "read" {
             pages
@@ -590,7 +627,61 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         } else {
             page
         };
-        db.prepare("INSERT INTO library(reader_id,book_id,status,page,rating,review,started_at,finished_at) VALUES (?,?,?,?,?,?,CASE WHEN ? IN ('reading','read','did-not-finish') THEN CURRENT_TIMESTAMP ELSE NULL END,CASE WHEN ?='read' THEN CURRENT_TIMESTAMP ELSE NULL END) ON CONFLICT(reader_id,book_id) DO UPDATE SET status=excluded.status,page=excluded.page,rating=excluded.rating,review=excluded.review,updated_at=CURRENT_TIMESTAMP,started_at=CASE WHEN excluded.status='reading' THEN COALESCE(library.started_at,CURRENT_TIMESTAMP) WHEN excluded.status='want' THEN NULL ELSE library.started_at END,finished_at=CASE WHEN excluded.status='read' THEN COALESCE(library.finished_at,CURRENT_TIMESTAMP) ELSE NULL END").bind(&[arg(id),arg(book_id),arg(status),num(p),rating.map(num).unwrap_or(wasm_bindgen::JsValue::NULL),arg(review),arg(status),arg(status)])?.run().await?;
+        db.batch(vec![
+            // Leaving the finished shelf also leaves the ranking; close the gap it left behind.
+            db.prepare("UPDATE library SET rank_position=rank_position-1 WHERE reader_id=? AND ?!='read' AND rank_position > (SELECT rank_position FROM library WHERE reader_id=? AND book_id=?)")
+                .bind(&[arg(id), arg(status), arg(id), arg(book_id)])?,
+            db.prepare("INSERT INTO library(reader_id,book_id,status,page,review,started_at,finished_at) VALUES (?,?,?,?,?,CASE WHEN ? IN ('reading','read','did-not-finish') THEN CURRENT_TIMESTAMP ELSE NULL END,CASE WHEN ?='read' THEN CURRENT_TIMESTAMP ELSE NULL END) ON CONFLICT(reader_id,book_id) DO UPDATE SET status=excluded.status,page=excluded.page,review=excluded.review,rank_position=CASE WHEN excluded.status='read' THEN library.rank_position ELSE NULL END,updated_at=CURRENT_TIMESTAMP,started_at=CASE WHEN excluded.status='reading' THEN COALESCE(library.started_at,CURRENT_TIMESTAMP) WHEN excluded.status='want' THEN NULL ELSE library.started_at END,finished_at=CASE WHEN excluded.status='read' THEN COALESCE(library.finished_at,CURRENT_TIMESTAMP) ELSE NULL END")
+                .bind(&[arg(id),arg(book_id),arg(status),num(p),arg(review),arg(status),arg(status)])?,
+        ])
+        .await?;
+        return reply(json!({"ok":true}), 200);
+    }
+    if path == "/api/v1/library/rank" && method == Method::Put {
+        let Some(rank_position) = v["rank_position"].as_i64() else {
+            return bad("rank_position is required");
+        };
+        let existing = db
+            .prepare("SELECT status, rank_position FROM library WHERE reader_id=? AND book_id=?")
+            .bind(&[arg(id), arg(book_id)])?
+            .first::<Value>(None)
+            .await?;
+        let Some(existing) = existing else {
+            return bad("Finish the book before ranking it");
+        };
+        if text(&existing, "status") != "read" {
+            return bad("Finish the book before ranking it");
+        }
+        let old_rank = existing.get("rank_position").and_then(Value::as_i64);
+        let other_ranked = rows(
+            &db,
+            "SELECT COUNT(*) as n FROM library WHERE reader_id=? AND rank_position IS NOT NULL AND book_id!=?",
+            vec![arg(id), arg(book_id)],
+        )
+        .await?
+        .first()
+        .map(|r| int(r, "n"))
+        .unwrap_or(0);
+        if rank_position < 0 || rank_position > other_ranked {
+            return bad("Invalid rank position");
+        }
+        let mut statements = Vec::new();
+        if let Some(old) = old_rank {
+            // Close the gap this book's previous position leaves before reinserting it.
+            statements.push(
+                db.prepare("UPDATE library SET rank_position=rank_position-1 WHERE reader_id=? AND rank_position>?")
+                    .bind(&[arg(id), num(old)])?,
+            );
+        }
+        statements.push(
+            db.prepare("UPDATE library SET rank_position=rank_position+1 WHERE reader_id=? AND rank_position>=? AND book_id!=?")
+                .bind(&[arg(id), num(rank_position), arg(book_id)])?,
+        );
+        statements.push(
+            db.prepare("UPDATE library SET rank_position=? WHERE reader_id=? AND book_id=?")
+                .bind(&[num(rank_position), arg(id), arg(book_id)])?,
+        );
+        db.batch(statements).await?;
         return reply(json!({"ok":true}), 200);
     }
     if path == "/api/v1/notes" && method == Method::Post {
@@ -670,7 +761,7 @@ mod tests {
             json!({"id":"b","genre":"History","friend_count":1,"is_shared":1}),
             json!({"id":"c","genre":"Fiction","friend_count":3,"is_shared":1}),
         ];
-        let library = vec![json!({"book_id":"a","status":"read","rating":5})];
+        let library = vec![json!({"book_id":"a","status":"read","rank_position":0})];
         let swipes = vec![json!({"book_id":"b"})];
         let result = recommendations(&books, &library, &swipes);
         assert_eq!(result.len(), 1);
@@ -686,6 +777,19 @@ mod tests {
         let result = recommendations(&books, &[], &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0]["id"], "a");
+    }
+    #[test]
+    fn normalized_ratings_hide_until_threshold_then_spread_one_to_five() {
+        let mut library: Vec<Value> = (0..4)
+            .map(|p| json!({"book_id":p.to_string(),"rank_position":p}))
+            .collect();
+        normalize_ratings(&mut library);
+        assert!(library.iter().all(|l| l["normalized_rating"].is_null()));
+        library.push(json!({"book_id":"4","rank_position":4}));
+        normalize_ratings(&mut library);
+        assert_eq!(library[0]["normalized_rating"], 5.0);
+        assert_eq!(library[4]["normalized_rating"], 1.0);
+        assert_eq!(library[2]["ranked_total"], 5);
     }
     #[test]
     fn attributes_ignore_wishlist_and_cap_scores() {
