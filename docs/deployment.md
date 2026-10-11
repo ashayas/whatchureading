@@ -22,4 +22,6 @@ Local D1 and remote D1 are separate. Published migrations contain schema only. T
 
 The SPA serves `/auth/callback`; configure the corresponding allowed redirect URLs and site origin in Supabase. Authentication is the only Supabase feature used. Email confirmation/reset delivery requires SMTP.
 
+Two more Workers deploy alongside the app, each with its own gitignored config copied from a published `*.example.jsonc` template and its own `npm run deploy:*` step (both run automatically by `npm run deploy`): `browser-worker` (Goodreads import automation) and `mcp-worker` (the [MCP server](mcp.md), `whatchureading-mcp` on `mcp.whatchureading.com`). Both bind the same D1 `DB` as the main app; neither needs its own Supabase secrets.
+
 Useful references: [Cloudflare secrets](https://developers.cloudflare.com/workers/configuration/secrets/), [Wrangler configuration](https://developers.cloudflare.com/workers/wrangler/configuration/), [Supabase password auth](https://supabase.com/docs/guides/auth/passwords).

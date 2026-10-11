@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "whatchureading-mcp",
+  "main": "mcp-worker/index.ts",
+  "compatibility_date": "2026-10-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "account_id": "YOUR_CLOUDFLARE_ACCOUNT_ID",
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "whatchureading-db",
+    "database_id": "YOUR_D1_DATABASE_ID",
+    "migrations_dir": "migrations"
+  }],
+  "routes": [{ "pattern": "mcp.example.com", "custom_domain": true }]
+}

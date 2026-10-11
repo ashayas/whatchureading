@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use worker::*;
 
@@ -25,6 +26,18 @@ fn num(n: i64) -> wasm_bindgen::JsValue {
 }
 fn real(n: f64) -> wasm_bindgen::JsValue {
     n.into()
+}
+// MCP (AI agent) access token: generated once, shown to the reader once, and
+// stored in D1 only as its SHA-256 hash. Two v4 UUIDs give ample randomness
+// without adding a dedicated RNG dependency.
+fn generate_agent_token() -> String {
+    format!("wur_{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+fn hash_agent_token(token: &str) -> String {
+    Sha256::digest(token.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 // Covers are proxied through this Worker (instead of the browser hitting
 // Open Library's CDN directly) so Cloudflare's edge Cache API can serve
@@ -400,6 +413,15 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             }
         }
     }
+    if method == Method::Get && path == "/api/v1/agent-token" {
+        let reader = db
+            .prepare("SELECT agent_token_created_at FROM readers WHERE id=?")
+            .bind(&[arg(id)])?
+            .first::<Value>(None)
+            .await?;
+        let created_at = reader.as_ref().and_then(|r| r["agent_token_created_at"].as_str());
+        return reply(json!({"exists":created_at.is_some(),"created_at":created_at}), 200);
+    }
     if method == Method::Get && path == "/api/v1/uploads/mine" {
         let mine = rows(
             &db,
@@ -704,6 +726,27 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             .run()
             .await?;
         return reply(json!({"id":book_id,"content_key":content_key}), 201);
+    }
+    if path == "/api/v1/agent-token" && method == Method::Post {
+        let token = generate_agent_token();
+        db.prepare("UPDATE readers SET agent_token_hash=?,agent_token_created_at=CURRENT_TIMESTAMP WHERE id=?")
+            .bind(&[arg(&hash_agent_token(&token)), arg(id)])?
+            .run()
+            .await?;
+        let reader = db
+            .prepare("SELECT agent_token_created_at FROM readers WHERE id=?")
+            .bind(&[arg(id)])?
+            .first::<Value>(None)
+            .await?;
+        let created_at = reader.and_then(|r| r["agent_token_created_at"].as_str().map(str::to_string));
+        return reply(json!({"token":token,"created_at":created_at}), 201);
+    }
+    if path == "/api/v1/agent-token" && method == Method::Delete {
+        db.prepare("UPDATE readers SET agent_token_hash=NULL,agent_token_created_at=NULL WHERE id=?")
+            .bind(&[arg(id)])?
+            .run()
+            .await?;
+        return reply(json!({"ok":true}), 200);
     }
     if path == "/api/v1/swipes/reset" && method == Method::Post {
         db.prepare("DELETE FROM swipes WHERE reader_id=? AND action='skip'")

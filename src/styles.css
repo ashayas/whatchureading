@@ -1828,6 +1828,10 @@ select {
 .goodreads-dropzone { display: grid; justify-items: center; gap: 5px; padding: 24px; border: 1.5px dashed #9eaa8c; border-radius: 12px; background: #f7f8ef; color: var(--green); text-align: center; cursor: pointer; }
 .goodreads-dropzone span { color: var(--muted); font-size: 12px; }
 .goodreads-dropzone input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.file-drop { display: grid; justify-items: center; gap: 5px; padding: 24px; margin-top: 14px; border: 1.5px dashed #9eaa8c; border-radius: 12px; background: #f7f8ef; color: var(--green); text-align: center; cursor: pointer; }
+.file-drop b { display: block; }
+.file-drop span { display: block; color: var(--muted); font-size: 12px; }
+.file-drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .import-preview { display: flex; justify-content: space-between; gap: 14px; margin-top: 14px; padding: 13px 15px; border-radius: 8px; background: #edf2e4; color: var(--green); }
 .import-preview span { color: var(--muted); text-align: right; }
 .import-error { color: #a9493d !important; }
@@ -1875,6 +1879,49 @@ select {
   color: #7a8e66;
   gap: 8px;
   margin: 19px 0;
+}
+.agent-token-card {
+  border-top: 1px solid #e7ecdc;
+  margin-top: 22px;
+  padding-top: 18px;
+}
+.agent-token-card .section-heading h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #42583b;
+  margin: 0 0 8px;
+}
+.agent-token-card p {
+  margin: 0 0 12px;
+}
+.agent-token-value {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #fffef9;
+  border: 1px solid #d9e2cc;
+  border-radius: 5px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.agent-token-value code,
+.agent-token-value pre {
+  flex: 1;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: #42583b;
+  word-break: break-all;
+  white-space: pre-wrap;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.agent-token-value .icon-button {
+  flex-shrink: 0;
+  min-width: 36px;
+  min-height: 36px;
 }
 input:not([type="checkbox"]):not([type="range"]),
 textarea {

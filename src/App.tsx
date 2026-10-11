@@ -2,11 +2,13 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  Bot,
   BookOpen,
   Bookmark,
   Check,
   ChevronRight,
   Compass,
+  Copy,
   ExternalLink,
   FileSpreadsheet,
   GraduationCap,
@@ -372,6 +374,22 @@ const demoActivities = [
     type: "want",
   },
 ];
+// The hosted deployment runs the MCP server on its own subdomain; a
+// self-hosted instance multiplexes it onto the same origin at /mcp instead.
+function mcpServerUrl() {
+  const host = window.location.hostname;
+  if (host === "whatchureading.com" || host === "www.whatchureading.com") {
+    return "https://mcp.whatchureading.com/mcp";
+  }
+  return `${window.location.origin}/mcp`;
+}
+function mcpConfigSnippet(token: string) {
+  return JSON.stringify(
+    { mcpServers: { whatchureading: { url: mcpServerUrl(), headers: { Authorization: `Bearer ${token}` } } } },
+    null,
+    2,
+  );
+}
 export default function App({ initialData }: { initialData: Bootstrap }) {
   const [data, setData] = useState<Bootstrap>(initialData);
   const [page, setPage] = useState<Page>(() =>
@@ -394,6 +412,9 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
   const [settings, setSettings] = useState(false),
     [name, setName] = useState(""),
     [goal, setGoal] = useState(24),
+    [agentToken, setAgentToken] = useState<string | null>(null),
+    [agentTokenCreatedAt, setAgentTokenCreatedAt] = useState<string | null>(null),
+    [agentTokenBusy, setAgentTokenBusy] = useState(false),
     [goodreadsImportOpen, setGoodreadsImportOpen] = useState(() =>
       initialData.library.length === 0 && localStorage.getItem("wcr.goodreads-onboarding-seen") !== "1",
     ),
@@ -477,6 +498,24 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     setToast(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(""), 3500);
+  }
+  async function createAgentToken() {
+    setAgentTokenBusy(true);
+    try {
+      const r = await api<{ token: string; created_at: string }>("agent-token", "POST", {});
+      setAgentToken(r.token);
+      setAgentTokenCreatedAt(r.created_at);
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setAgentTokenBusy(false);
+    }
+  }
+  function copyToClipboard(text: string, message: string) {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => notify(message))
+      .catch(() => notify("Could not copy. Select and copy it manually."));
   }
   async function mutate(
     path: string,
@@ -937,7 +976,11 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                         onClick={() => {
                           setName(data.profile.name);
                           setGoal(data.profile.goal);
+                          setAgentToken(null);
                           setSettings(true);
+                          void api<{ exists: boolean; created_at: string | null }>("agent-token")
+                            .then((r) => setAgentTokenCreatedAt(r.exists ? r.created_at : null))
+                            .catch(() => setAgentTokenCreatedAt(null));
                         }}
                       >
                         <Settings2 size={16} />
@@ -1872,6 +1915,39 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
               Save profile <Check size={16} />
             </button>
           </form>
+          <section className="agent-token-card">
+            <div className="section-heading">
+              <h3><Bot size={16} /> AI agents</h3>
+            </div>
+            {agentToken ? (
+              <>
+                <p>Copy this token now — it won't be shown again. Paste it into your agent's MCP config, or copy the ready-made config block below.</p>
+                <div className="agent-token-value">
+                  <code>{agentToken}</code>
+                  <button type="button" className="icon-button" aria-label="Copy token" onClick={() => copyToClipboard(agentToken, "Token copied")}>
+                    <Copy size={15} />
+                  </button>
+                </div>
+                <div className="agent-token-value">
+                  <pre>{mcpConfigSnippet(agentToken)}</pre>
+                  <button type="button" className="icon-button" aria-label="Copy MCP config" onClick={() => copyToClipboard(mcpConfigSnippet(agentToken), "Config copied")}>
+                    <Copy size={15} />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p>
+                  {agentTokenCreatedAt
+                    ? `Connected since ${new Date(agentTokenCreatedAt).toLocaleDateString()}. Regenerating replaces your current token — update it everywhere you've pasted it.`
+                    : "Let Claude, ChatGPT, or another AI agent track your progress, add books, and leave comments on your behalf."}
+                </p>
+                <button type="button" className="outline" disabled={agentTokenBusy} onClick={() => void createAgentToken()}>
+                  {agentTokenBusy ? <><Loader2 className="spin" size={16} /> Generating…</> : agentTokenCreatedAt ? "Regenerate token" : "Add to your AI agent"}
+                </button>
+              </>
+            )}
+          </section>
           <button
             className="auth-text-button"
             onClick={() => void signOut().catch((e) => notify(e.message))}

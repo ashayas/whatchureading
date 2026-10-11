@@ -34,6 +34,9 @@ D1 exclusively stores application users/metadata and reading data. Supabase stor
 | DELETE | `/groups/:id/members` | `{reader_id?}`. Omit `reader_id` to leave; the owner can remove any other member. |
 | POST | `/groups/:id/pick` | `{book_id}`. Owner-only. A group is a book club exactly when it has a current pick — closes any existing pick into history and starts a new one. |
 | POST | `/groups/:id/comments` | `{body}`. Member-only opinion on the group's current pick; 400 if the group has no current pick. |
+| GET | `/agent-token` | `{exists,created_at}` for the reader's MCP (AI agent) token. Never returns the token itself. |
+| POST | `/agent-token` | `{}`. Generates a new MCP access token, overwriting (revoking) any previous one. Returns `{token,created_at}`; the plaintext token is shown exactly once. |
+| DELETE | `/agent-token` | `{}`. Revokes the reader's MCP access token. |
 
 Progress is pages rather than percentages so web and mobile calculate the same timeline. Reviews allow 5,000 characters, thoughts 2,000. SQL is parameterized. D1 enforces unique auth subjects; batches update swipe/shelf records atomically. Genre attributes are playful inferred metrics, not ability scores. Discovery scores are an explicit heuristic, not a trained recommendation model.
 

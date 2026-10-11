@@ -10,6 +10,7 @@ artifacts/
 .dev.vars*
 wrangler.jsonc
 browser.wrangler.jsonc
+mcp.wrangler.jsonc
 worker-configuration.d.ts
 AGENTS.md
 src/catalog.json
