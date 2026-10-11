@@ -5,7 +5,9 @@ import zlib from "node:zlib";
 import crypto from "node:crypto";
 import readline from "node:readline";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { execFileSync } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 
 // Owns a monthly-refreshed, flattened slice of Open Library's edition dump in
 // a dedicated D1 database (never the app's primary DB), keeping cost down by
@@ -95,17 +97,53 @@ async function writeLine(stream, line) {
   if (!stream.write(line)) await new Promise((resolve) => stream.once("drain", resolve));
 }
 
-async function downloadAndFilter(destPath) {
-  const response = await fetch(DUMP_URL);
-  if (!response.ok || !response.body) throw new Error(`Dump download failed: HTTP ${response.status}`);
+// The compressed dump is multiple gigabytes; a single HTTP connection held
+// open for an hour-plus to transfer it is liable to be reset partway through
+// (observed: a clean socket close ~40% in, after ~96 minutes). Downloading to
+// a local file with Range-request resume, retried with backoff, means a
+// transient reset costs only the retry wait, not the whole download.
+async function downloadDumpWithResume(url, gzPath, maxAttempts = 8) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const existing = fs.existsSync(gzPath) ? fs.statSync(gzPath).size : 0;
+    let response;
+    try {
+      response = await fetch(url, existing > 0 ? { headers: { Range: `bytes=${existing}-` } } : {});
+    } catch (e) {
+      console.log(`Download attempt ${attempt}/${maxAttempts} failed before a response: ${e.message}`);
+      await sleep(Math.min(60_000, 2 ** attempt * 1000));
+      continue;
+    }
+    if (existing > 0 && response.status === 416) return; // Already have the whole file.
+    if (!response.ok || !response.body) {
+      console.log(`Download attempt ${attempt}/${maxAttempts} failed: HTTP ${response.status}`);
+      await sleep(Math.min(60_000, 2 ** attempt * 1000));
+      continue;
+    }
+    const resuming = existing > 0 && response.status === 206;
+    if (existing > 0 && !resuming) fs.rmSync(gzPath, { force: true }); // Server ignored our Range request.
+    const out = fs.createWriteStream(gzPath, { flags: resuming ? "a" : "w" });
+    try {
+      await pipeline(Readable.fromWeb(response.body), out);
+      console.log(`Download complete: ${fs.statSync(gzPath).size} bytes.`);
+      return;
+    } catch (e) {
+      console.log(`Download attempt ${attempt}/${maxAttempts} interrupted at ${fs.statSync(gzPath).size} bytes: ${e.message}`);
+      await sleep(Math.min(60_000, 2 ** attempt * 1000));
+    }
+  }
+  throw new Error(`Could not download ${url} after ${maxAttempts} attempts.`);
+}
+
+async function filterDump(gzPath, destPath) {
   const gunzip = zlib.createGunzip();
-  Readable.fromWeb(response.body).pipe(gunzip);
+  fs.createReadStream(gzPath).pipe(gunzip);
   const rl = readline.createInterface({ input: gunzip, crlfDelay: Infinity });
   const out = fs.createWriteStream(destPath);
   let scanned = 0;
   let kept = 0;
   for await (const line of rl) {
     scanned++;
+    if (scanned % 2_000_000 === 0) console.log(`Scanned ${scanned} lines so far, kept ${kept}...`);
     const parts = splitDumpLine(line);
     if (!parts || parts[0] !== "/type/edition") continue;
     let raw;
@@ -171,8 +209,12 @@ async function main() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openlibrary-sync-"));
   try {
     const currentPath = path.join(tmpDir, "current.ndjson");
-    console.log(`Downloading and filtering ${DUMP_URL} ...`);
-    const { scanned, kept } = await downloadAndFilter(currentPath);
+    const rawGzPath = path.join(tmpDir, "editions-dump.txt.gz");
+    console.log(`Downloading ${DUMP_URL} ...`);
+    await downloadDumpWithResume(DUMP_URL, rawGzPath);
+    console.log("Filtering the dump ...");
+    const { scanned, kept } = await filterDump(rawGzPath, currentPath);
+    fs.rmSync(rawGzPath, { force: true });
     console.log(`Scanned ${scanned} dump records, kept ${kept} English editions with an ISBN.`);
 
     console.log("Loading previous month's snapshot for diffing ...");
