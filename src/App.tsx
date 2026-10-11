@@ -26,8 +26,8 @@ import {
   Wind,
   X,
 } from "lucide-react";
-import type { Book, Bootstrap, FriendProfile, GroupDetail, GroupSummary, LibraryItem, NoteVisibility, PaperTopic, Shelf, Thought } from "./types";
-import { api, apiUploadPdf, PAPER_TOPICS, RATING_THRESHOLD } from "./types";
+import type { Book, Bootstrap, FriendNote, FriendProfile, GroupDetail, GroupSummary, LibraryItem, NoteVisibility, PaperTopic, Shelf, Thought } from "./types";
+import { api, apiUploadAvatar, apiUploadPdf, PAPER_TOPICS, RATING_THRESHOLD } from "./types";
 import { authClient, signOut } from "./auth";
 import { PdfReader, loadPdfjs } from "./PdfReader";
 
@@ -113,11 +113,24 @@ function Avatar({
   name,
   color = "peach",
   small = false,
+  readerId,
+  avatarKey,
 }: {
   name: string;
   color?: string;
   small?: boolean;
+  readerId?: string;
+  avatarKey?: string | null;
 }) {
+  if (readerId && avatarKey) {
+    return (
+      <img
+        className={`avatar avatar-photo ${small ? "small" : ""}`}
+        src={`/api/v1/avatar/${encodeURIComponent(readerId)}`}
+        alt=""
+      />
+    );
+  }
   return (
     <span className={`avatar ${color} ${small ? "small" : ""}`}>
       {name
@@ -128,12 +141,20 @@ function Avatar({
     </span>
   );
 }
-function Facepile() {
+function Facepile({ friends }: { friends: { id: string; name: string; avatar_key: string | null }[] }) {
+  if (!friends.length) return null;
   return (
     <span className="facepile">
-      <Avatar name="Maya" small />
-      <Avatar name="James" color="sage" small />
-      <Avatar name="Sophie" color="lavender" small />
+      {friends.slice(0, 3).map((f, i) => (
+        <Avatar
+          key={f.id}
+          name={f.name}
+          color={["peach", "sage", "lavender"][i % 3]}
+          readerId={f.id}
+          avatarKey={f.avatar_key}
+          small
+        />
+      ))}
     </span>
   );
 }
@@ -325,55 +346,6 @@ function Radar({
     </svg>
   );
 }
-const demoActivities = [
-  {
-    id: "maya",
-    name: "Maya Chen",
-    color: "peach",
-    action: "shared a thought",
-    time: "2 hours ago",
-    book: "tomorrow",
-    page: 128,
-    quote:
-      "“There is no more intimate act than play.” This book gets the beautiful, messy thing that is making something with someone.",
-    type: "thought",
-  },
-  {
-    id: "james",
-    name: "James Wilson",
-    color: "sage",
-    action: "finished reading",
-    time: "4 hours ago",
-    book: "project",
-    page: 496,
-    quote:
-      "Came for the space adventure. Stayed for the most unexpected friendship. I wish I could read this for the first time again.",
-    type: "review",
-  },
-  {
-    id: "sophie",
-    name: "Sophie Park",
-    color: "lavender",
-    action: "started reading",
-    time: "6 hours ago",
-    book: "crawdads",
-    page: 34,
-    quote:
-      "A rainy weekend, a cup of tea, and this. Finally seeing what all the fuss is about.",
-    type: "started",
-  },
-  {
-    id: "leo",
-    name: "Leo Martin",
-    color: "sand",
-    action: "added to their shelf",
-    time: "Yesterday",
-    book: "piranesi",
-    page: 0,
-    quote: "You all convinced me. This is next on my list.",
-    type: "want",
-  },
-];
 // The hosted deployment runs the MCP server on its own subdomain; a
 // self-hosted instance multiplexes it onto the same origin at /mcp instead.
 function mcpServerUrl() {
@@ -411,6 +383,8 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     [paperTopic, setPaperTopic] = useState<PaperTopic | "All">("All");
   const [settings, setSettings] = useState(false),
     [name, setName] = useState(""),
+    [username, setUsername] = useState(""),
+    [avatarBusy, setAvatarBusy] = useState(false),
     [goal, setGoal] = useState(24),
     [agentToken, setAgentToken] = useState<string | null>(null),
     [agentTokenCreatedAt, setAgentTokenCreatedAt] = useState<string | null>(null),
@@ -657,7 +631,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
             <i /> YOUR READING LIFE
           </span>
           <button className="account" onClick={() => navigate("profile")}>
-            <Avatar name={data.profile.name} />
+            <Avatar name={data.profile.name} readerId={data.reader_id} avatarKey={data.profile.avatar_key} />
             <span>
               <b>{data.profile.name}</b>
               <small>One chapter at a time</small>
@@ -682,7 +656,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
             onClick={() => navigate("profile")}
             aria-label="Your profile"
           >
-            <Avatar name={data.profile.name} small />
+            <Avatar name={data.profile.name} readerId={data.reader_id} avatarKey={data.profile.avatar_key} small />
           </button>
         </header>
         <main>
@@ -704,51 +678,6 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   <span>✳</span>
                 </span>
               </div>
-              <section className="hero">
-                <div className="hero-copy">
-                  <span className="hero-kicker">
-                    <span /> A WORLD BETWEEN THE COVERS
-                  </span>
-                  <h2>
-                    Great stories.
-                    <br />
-                    Even better company.
-                  </h2>
-                  <p>
-                    Find the books that stay with you.
-                    <br />
-                    And the people to talk about them with.
-                  </p>
-                  <button onClick={() => navigate("discover")}>
-                    Find your next read <ArrowRight size={17} />
-                  </button>
-                  <div className="hero-social">
-                    <Facepile />
-                    <span>A new chapter is better together.</span>
-                  </div>
-                </div>
-                <div className="hero-art" aria-hidden="true">
-                  <div className="orbit orbit-one" />
-                  <div className="orbit orbit-two" />
-                  <span className="art-star">✳</span>
-                  <span className="art-spark">✦</span>
-                  {book("crawdads") && (
-                    <Cover
-                      book={book("crawdads")}
-                      className="hero-book book-back"
-                      onClick={() => setSelected(book("crawdads"))}
-                    />
-                  )}
-                  {book("tomorrow") && (
-                    <Cover
-                      book={book("tomorrow")}
-                      className="hero-book book-front"
-                      onClick={() => setSelected(book("tomorrow"))}
-                    />
-                  )}
-                  <span className="art-caption">JUST ONE MORE CHAPTER.</span>
-                </div>
-              </section>
               <div className="feed-columns">
                 <div>
                   <div className="section-heading">
@@ -773,7 +702,6 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   </div>
                   <div className="section-heading feed-title">
                     <h2>The latest chapter</h2>
-                    <span className="demo-pill">DEMO FRIENDS</span>
                   </div>
                   <div className="feed-tabs">
                     {["Everyone", "Friends", "Your updates"].map((f) => (
@@ -791,128 +719,122 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   </div>
                   <div className="activities">
                     {feedFilter !== "Your updates" &&
-                      demoActivities
-                        .filter((a) => data.books.some((b) => b.id === a.book))
-                        .map((a) => (
-                          <article className="activity" key={a.id}>
-                            <div className="activity-header">
-                              <Avatar name={a.name} color={a.color} />
-                              <div>
-                                <p>
-                                  <b>{a.name}</b> <span>{a.action}</span>
-                                </p>
-                                <small>
-                                  {a.time} <span>· Demo friend</span>
-                                </small>
-                              </div>
-                              <button
-                                className="icon-button"
-                                aria-label={"View " + book(a.book).title}
-                                onClick={() => setSelected(book(a.book))}
-                              >
-                                <ChevronRight size={18} />
-                              </button>
+                      data.friend_notes.map((note) => (
+                        <article className="activity" key={note.id}>
+                          <div className="activity-header">
+                            <Avatar
+                              name={friendName(note.name)}
+                              readerId={note.reader_id}
+                              avatarKey={note.avatar_key}
+                            />
+                            <div>
+                              <p>
+                                <b>{friendName(note.name)}</b>{" "}
+                                <span>shared a thought</span>
+                              </p>
+                              <small>
+                                {new Date(note.created_at).toLocaleDateString()}
+                              </small>
                             </div>
-                            <div className="activity-content">
-                              <Cover
-                                book={book(a.book)}
-                                onClick={() => setSelected(book(a.book))}
-                              />
-                              <div>
-                                <h3>
-                                  <button
-                                    onClick={() => setSelected(book(a.book))}
-                                  >
-                                    {book(a.book).title}
-                                  </button>
-                                </h3>
-                                <p className="author">{book(a.book).author}</p>
-                                {a.type === "review" ? (
-                                  <div className="review-rating">
-                                    <Stars value={5} />
-                                    <span>A new favorite</span>
-                                  </div>
-                                ) : a.type === "thought" ? (
-                                  <span className="page-chip">
-                                    <Bookmark size={11} /> A thought on page{" "}
-                                    {a.page}
-                                  </span>
-                                ) : (
-                                  <span className="genre-tag">
-                                    {a.type === "started"
-                                      ? "Currently reading"
-                                      : "Want to read"}
-                                  </span>
-                                )}
-                                <p className="activity-quote">{a.quote}</p>
-                              </div>
+                            <button
+                              className="icon-button"
+                              aria-label={"View " + note.title}
+                              onClick={() => setSelected(book(note.book_id))}
+                            >
+                              <ChevronRight size={18} />
+                            </button>
+                          </div>
+                          <div className="activity-content">
+                            <Cover
+                              book={book(note.book_id)}
+                              onClick={() => setSelected(book(note.book_id))}
+                            />
+                            <div>
+                              <h3>
+                                <button
+                                  onClick={() => setSelected(book(note.book_id))}
+                                >
+                                  {note.title}
+                                </button>
+                              </h3>
+                              <p className="author">{note.author}</p>
+                              <span className="page-chip">
+                                <Bookmark size={11} /> A thought on page{" "}
+                                {note.page}
+                                {note.spoiler ? " · Contains spoilers" : ""}
+                              </span>
+                              <p className="activity-quote">{note.body}</p>
                             </div>
-                            <div className="activity-actions">
-                              <button
-                                className={
-                                  data.likes.some((l) => l.activity_id === a.id)
-                                    ? "liked"
-                                    : ""
-                                }
-                                disabled={busy}
-                                onClick={() =>
-                                  mutate("likes", "POST", {
-                                    activity_id: a.id,
-                                    liked: !data.likes.some(
-                                      (l) => l.activity_id === a.id,
-                                    ),
-                                  })
-                                }
-                              >
-                                <Heart
-                                  size={16}
-                                  fill={
-                                    data.likes.some(
-                                      (l) => l.activity_id === a.id,
-                                    )
-                                      ? "currentColor"
-                                      : "none"
-                                  }
-                                />{" "}
-                                {({ maya: 12, james: 24, sophie: 8, leo: 5 }[
-                                  a.id
-                                ] || 0) +
-                                  (data.likes.some(
-                                    (l) => l.activity_id === a.id,
+                          </div>
+                          <div className="activity-actions">
+                            <button
+                              className={
+                                data.likes.some(
+                                  (l) => l.activity_id === note.id,
+                                )
+                                  ? "liked"
+                                  : ""
+                              }
+                              disabled={busy}
+                              onClick={() =>
+                                mutate("likes", "POST", {
+                                  activity_id: note.id,
+                                  liked: !data.likes.some(
+                                    (l) => l.activity_id === note.id,
+                                  ),
+                                })
+                              }
+                            >
+                              <Heart
+                                size={16}
+                                fill={
+                                  data.likes.some(
+                                    (l) => l.activity_id === note.id,
                                   )
-                                    ? 1
-                                    : 0)}
-                              </button>
-                              <button onClick={() => setSelected(book(a.book))}>
-                                <MessageCircle size={16} /> Your thoughts
-                              </button>
-                              <button
-                                className="save-action"
-                                disabled={
-                                  busy ||
-                                  data.library.some((l) => l.book_id === a.book)
+                                    ? "currentColor"
+                                    : "none"
                                 }
-                                onClick={() =>
-                                  mutate(
-                                    "library",
-                                    "PUT",
-                                    {
-                                      book_id: a.book,
-                                      status: "want",
-                                      page: 0,
-                                    },
-                                    "Added to your want-to-read shelf",
-                                  )
-                                }
-                              >
-                                <Plus size={15} />{" "}
-                                {data.library.some((l) => l.book_id === a.book)
-                                  ? "On your shelf"
-                                  : "Want to read"}
-                              </button>
-                            </div>
-                          </article>
-                        ))}
+                              />{" "}
+                              {data.likes.some(
+                                (l) => l.activity_id === note.id,
+                              )
+                                ? "Liked"
+                                : "Like"}
+                            </button>
+                            <button onClick={() => setSelected(book(note.book_id))}>
+                              <MessageCircle size={16} /> Your thoughts
+                            </button>
+                            <button
+                              className="save-action"
+                              disabled={
+                                busy ||
+                                data.library.some(
+                                  (l) => l.book_id === note.book_id,
+                                )
+                              }
+                              onClick={() =>
+                                mutate(
+                                  "library",
+                                  "PUT",
+                                  {
+                                    book_id: note.book_id,
+                                    status: "want",
+                                    page: 0,
+                                  },
+                                  "Added to your want-to-read shelf",
+                                )
+                              }
+                            >
+                              <Plus size={15} />{" "}
+                              {data.library.some(
+                                (l) => l.book_id === note.book_id,
+                              )
+                                ? "On your shelf"
+                                : "Want to read"}
+                            </button>
+                          </div>
+                        </article>
+                      ))}
                     {feedFilter !== "Friends" && (
                       <>
                         {[...data.notes]
@@ -922,7 +844,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                           .map((n) => (
                             <article className="activity personal" key={n.id}>
                               <div className="activity-header">
-                                <Avatar name={data.profile.name} />
+                                <Avatar name={data.profile.name} readerId={data.reader_id} avatarKey={data.profile.avatar_key} />
                                 <div>
                                   <p>
                                     <b>You</b> shared a thought on{" "}
@@ -958,6 +880,13 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                           ))}
                       </>
                     )}
+                    {feedFilter !== "Your updates" &&
+                      data.friend_notes.length === 0 && (
+                        <p className="empty-copy">
+                          Your friends haven't shared a thought yet. Check back
+                          soon.
+                        </p>
+                      )}
                   </div>
                   <div className="feed-end">
                     <span>✳</span>
@@ -975,6 +904,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                         aria-label="Edit reading goal"
                         onClick={() => {
                           setName(data.profile.name);
+                          setUsername(data.profile.username || "");
                           setGoal(data.profile.goal);
                           setAgentToken(null);
                           setSettings(true);
@@ -1026,7 +956,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                           key={friend.id}
                           onClick={() => openFriend(friend.id)}
                         >
-                          <Avatar name={friendName(friend.name)} color={["peach", "lavender", "sage"][index % 3]} small />
+                          <Avatar name={friendName(friend.name)} color={["peach", "lavender", "sage"][index % 3]} readerId={friend.id} avatarKey={friend.avatar_key} small />
                           <span>
                             <b>{friendName(friend.name)}</b>
                             <small>{friend.book_title || "No book in progress"}</small>
@@ -1043,6 +973,51 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   </div>
                 </aside>
               </div>
+              <section className="hero hero-secondary">
+                <div className="hero-copy">
+                  <span className="hero-kicker">
+                    <span /> A WORLD BETWEEN THE COVERS
+                  </span>
+                  <h2>
+                    Great stories.
+                    <br />
+                    Even better company.
+                  </h2>
+                  <p>
+                    Find the books that stay with you.
+                    <br />
+                    And the people to talk about them with.
+                  </p>
+                  <button onClick={() => navigate("discover")}>
+                    Find your next read <ArrowRight size={17} />
+                  </button>
+                  <div className="hero-social">
+                    <Facepile friends={data.friends} />
+                    <span>A new chapter is better together.</span>
+                  </div>
+                </div>
+                <div className="hero-art" aria-hidden="true">
+                  <div className="orbit orbit-one" />
+                  <div className="orbit orbit-two" />
+                  <span className="art-star">✳</span>
+                  <span className="art-spark">✦</span>
+                  {book("crawdads") && (
+                    <Cover
+                      book={book("crawdads")}
+                      className="hero-book book-back"
+                      onClick={() => setSelected(book("crawdads"))}
+                    />
+                  )}
+                  {book("tomorrow") && (
+                    <Cover
+                      book={book("tomorrow")}
+                      className="hero-book book-front"
+                      onClick={() => setSelected(book("tomorrow"))}
+                    />
+                  )}
+                  <span className="art-caption">JUST ONE MORE CHAPTER.</span>
+                </div>
+              </section>
             </>
           )}
 
@@ -1057,7 +1032,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                       <h1>{friendName(friendProfile.profile.name)}<span>.</span></h1>
                       <p>{friendProfile.library.length} books · {friendProfile.notes.length} reading thoughts</p>
                     </div>
-                    <Avatar name={friendName(friendProfile.profile.name)} />
+                    <Avatar name={friendName(friendProfile.profile.name)} readerId={friendProfile.profile.id} avatarKey={friendProfile.profile.avatar_key} />
                   </div>
                   <div className="friend-detail-columns">
                     <section>
@@ -1115,7 +1090,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                     return (
                       <article className="friend-card" key={friend.id}>
                         <button className="friend-card-heading friend-profile-link" onClick={() => openFriend(friend.id)}>
-                          <Avatar name={friendName(friend.name)} color={["peach", "lavender", "sage"][index % 3]} />
+                          <Avatar name={friendName(friend.name)} color={["peach", "lavender", "sage"][index % 3]} readerId={friend.id} avatarKey={friend.avatar_key} />
                           <div><h2>{friendName(friend.name)}</h2><span>View reading life <ArrowRight size={13} /></span></div>
                         </button>
                         <span className="eyebrow">ON THEIR NIGHTSTAND</span>
@@ -1228,7 +1203,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                       </div>
                       <p>{candidate.description}</p>
                       <div className="discovery-friends">
-                        <Facepile />
+                        <Facepile friends={data.friends} />
                         <span>
                           {candidate.friend_count} demo friends read this
                         </span>
@@ -1668,6 +1643,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                   className="outline"
                   onClick={() => {
                     setName(data.profile.name);
+                    setUsername(data.profile.username || "");
                     setGoal(data.profile.goal);
                     setSettings(true);
                   }}
@@ -1679,7 +1655,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                 </button>
               </div>
               <section className="profile-banner">
-                <Avatar name={data.profile.name} />
+                <Avatar name={data.profile.name} readerId={data.reader_id} avatarKey={data.profile.avatar_key} />
                 <div>
                   <span className="eyebrow">THE CURIOUS READER</span>
                   <h2>{data.profile.name}</h2>
@@ -1772,6 +1748,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                       className="text-action"
                       onClick={() => {
                         setName(data.profile.name);
+                        setUsername(data.profile.username || "");
                         setGoal(data.profile.goal);
                         setSettings(true);
                       }}
@@ -1877,6 +1854,37 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           <span className="eyebrow">YOUR READING LIFE</span>
           <h2>Set your own pace.</h2>
           <p>Every book counts. Make this space yours.</p>
+          <div className="avatar-picker">
+            <Avatar
+              name={data.profile.name}
+              readerId={data.reader_id}
+              avatarKey={data.profile.avatar_key}
+            />
+            <label className={`text-action ${avatarBusy ? "disabled" : ""}`}>
+              {avatarBusy ? "Uploading…" : "Change picture"}
+              <input
+                type="file"
+                accept="image/jpeg,image/png"
+                disabled={avatarBusy}
+                style={{ position: "absolute", width: 1, height: 1, opacity: 0 }}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (!file) return;
+                  setAvatarBusy(true);
+                  try {
+                    await apiUploadAvatar(file);
+                    await refresh();
+                    notify("Profile picture updated");
+                  } catch (err) {
+                    notify((err as Error).message);
+                  } finally {
+                    setAvatarBusy(false);
+                  }
+                }}
+              />
+            </label>
+          </div>
           <form
             onSubmit={async (e) => {
               e.preventDefault();
@@ -1884,7 +1892,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                 await mutate(
                   "profile",
                   "PUT",
-                  { name, goal },
+                  { name, goal, username: username.trim() || undefined },
                   "Profile updated",
                 )
               )
@@ -1898,6 +1906,17 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                 maxLength={60}
                 required
                 onChange={(e) => setName(e.target.value)}
+              />
+            </label>
+            <label>
+              Username
+              <input
+                value={username}
+                minLength={3}
+                maxLength={20}
+                pattern="[A-Za-z0-9_]{3,20}"
+                placeholder="your_username"
+                onChange={(e) => setUsername(e.target.value)}
               />
             </label>
             <label>

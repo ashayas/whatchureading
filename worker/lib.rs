@@ -21,6 +21,12 @@ async fn rows(db: &D1Database, sql: &str, args: Vec<wasm_bindgen::JsValue>) -> R
 fn arg(s: &str) -> wasm_bindgen::JsValue {
     s.into()
 }
+fn opt_arg(s: &Option<String>) -> wasm_bindgen::JsValue {
+    match s {
+        Some(s) => s.as_str().into(),
+        None => wasm_bindgen::JsValue::NULL,
+    }
+}
 fn num(n: i64) -> wasm_bindgen::JsValue {
     (n as f64).into()
 }
@@ -76,6 +82,40 @@ async fn cover(req: &Request, cover_id: &str) -> Result<Response> {
     cache.put(req, res.cloned()?).await?;
     Ok(res)
 }
+// Self-serve avatars, proxied through this Worker and stored in the same R2
+// bucket as uploaded book/paper content. Public, no auth: avatars need to
+// render in other readers' feeds and friend lists.
+async fn avatar(env: &Env, reader_id: &str) -> Result<Response> {
+    if reader_id.is_empty() || reader_id.len() > 64 {
+        return reply(json!({"error":"Not found"}), 404);
+    }
+    let db = env.d1("DB")?;
+    let reader = db
+        .prepare("SELECT avatar_key FROM readers WHERE id=?")
+        .bind(&[arg(reader_id)])?
+        .first::<Value>(None)
+        .await?;
+    let Some(key) = reader.and_then(|r| r.get("avatar_key").and_then(Value::as_str).map(str::to_string)) else {
+        return reply(json!({"error":"Not found"}), 404);
+    };
+    let bucket = env.bucket("UPLOADS")?;
+    let Some(object) = bucket.get(&key).execute().await? else {
+        return reply(json!({"error":"Not found"}), 404);
+    };
+    let Some(body) = object.body() else {
+        return reply(json!({"error":"Not found"}), 404);
+    };
+    let bytes = body.bytes().await?;
+    let content_type = object
+        .http_metadata()
+        .content_type
+        .unwrap_or_else(|| "image/jpeg".into());
+    let mut res = Response::from_bytes(bytes)?;
+    res.headers_mut().set("Content-Type", &content_type)?;
+    res.headers_mut()
+        .set("Cache-Control", "public, max-age=3600")?;
+    Ok(res)
+}
 // Never accept browser-supplied reader IDs. Supabase verifies the bearer token;
 // D1 owns the application identity and every reading record.
 async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
@@ -106,6 +146,11 @@ async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
             .first::<Value>(None)
             .await?;
         return reply(json!({"available":found.is_none(),"valid":true}), 200);
+    }
+    if let Some(reader_id) = path.strip_prefix("/api/v1/avatar/") {
+        if req.method() == Method::Get {
+            return avatar(env, reader_id).await;
+        }
     }
     let auth_url = env.secret("AUTH_SUPABASE_URL")?.to_string();
     let public_key = env.secret("AUTH_SUPABASE_KEY")?.to_string();
@@ -173,6 +218,7 @@ async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
         .bind(&[arg(auth_id)])?
         .first::<Value>(None)
         .await?;
+    let is_new = reader.is_none();
     if reader.is_none() {
         db.prepare(
             "INSERT OR IGNORE INTO readers(id,supabase_user_id,email,name) VALUES (?,?,?,?)",
@@ -195,8 +241,20 @@ async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
     let Some(reader) = reader else {
         return Err(Error::RustError("Reader creation failed".into()));
     };
-    let id = text(&reader, "id");
-    handle(req.clone()?, env, id).await
+    let id = text(&reader, "id").to_string();
+    // New readers start out friends with the synthetic Shakespeare account,
+    // so the feed and friends list are never empty on day one.
+    if is_new {
+        let _ = db
+            .batch(vec![
+                db.prepare("INSERT OR IGNORE INTO reader_friends(reader_id,friend_id) VALUES (?,'shakespeare')")
+                    .bind(&[arg(&id)])?,
+                db.prepare("INSERT OR IGNORE INTO reader_friends(reader_id,friend_id) VALUES ('shakespeare',?)")
+                    .bind(&[arg(&id)])?,
+            ])
+            .await;
+    }
+    handle(req.clone()?, env, &id).await
 }
 fn valid_username(username: &str) -> bool {
     (3..=20).contains(&username.len())
@@ -251,29 +309,65 @@ fn topic_attribute(topic: &str) -> usize {
     PAPER_TOPICS.iter().position(|t| *t == topic).unwrap_or(5)
 }
 // A separate radar from the book attributes above: areas of academic learning,
-// scored only from uploaded papers (kind="paper"), never books.
+// scored only from uploaded papers (kind="paper"), never books. Most papers
+// only touch a slice of their broad topic, so this is built from subtopic
+// keyword signals the reader extracts client-side as they read a paper
+// (library.topic_signals), not a single topic chosen once at upload. Papers
+// that haven't been opened yet (no signals) fall back to their upload-time
+// topic so the radar isn't empty before anyone starts reading.
 fn paper_attributes(library: &[Value], books: &[Value]) -> Value {
-    let mut scores = [15i64; 6];
+    use std::collections::HashMap;
+    let mut scores: HashMap<String, i64> = HashMap::new();
+    let mut any_signal = false;
     for item in library {
         if matches!(text(item, "status"), "want" | "did-not-finish") {
             continue;
         }
-        if let Some(b) = books
+        if !books
             .iter()
-            .find(|b| b["id"] == item["book_id"] && text(b, "kind") == "paper")
+            .any(|b| b["id"] == item["book_id"] && text(b, "kind") == "paper")
         {
-            let weight = if text(item, "status") == "read" {
-                18
-            } else {
-                8
-            };
-            scores[topic_attribute(text(b, "topic"))] += weight;
+            continue;
+        }
+        let weight = if text(item, "status") == "read" { 18 } else { 8 };
+        if let Some(signals) = item.get("topic_signals").and_then(Value::as_str) {
+            if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(signals) {
+                for (subtopic, count) in m {
+                    let hits = count.as_i64().unwrap_or(0);
+                    if hits > 0 {
+                        any_signal = true;
+                        *scores.entry(subtopic).or_insert(0) += weight * hits.min(5);
+                    }
+                }
+            }
         }
     }
-    json!(PAPER_TOPICS
+    if !any_signal {
+        let mut fallback = [15i64; 6];
+        for item in library {
+            if matches!(text(item, "status"), "want" | "did-not-finish") {
+                continue;
+            }
+            if let Some(b) = books
+                .iter()
+                .find(|b| b["id"] == item["book_id"] && text(b, "kind") == "paper")
+            {
+                let weight = if text(item, "status") == "read" { 18 } else { 8 };
+                fallback[topic_attribute(text(b, "topic"))] += weight;
+            }
+        }
+        return json!(PAPER_TOPICS
+            .iter()
+            .enumerate()
+            .map(|(i, label)| json!({"label":label,"value":fallback[i].min(99)}))
+            .collect::<Vec<_>>());
+    }
+    let mut ranked: Vec<(String, i64)> = scores.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(8);
+    json!(ranked
         .iter()
-        .enumerate()
-        .map(|(i, label)| json!({"label":label,"value":scores[i].min(99)}))
+        .map(|(label, value)| json!({"label":label,"value":(*value + 15).min(99)}))
         .collect::<Vec<_>>())
 }
 fn attributes(library: &[Value], books: &[Value]) -> Value {
@@ -352,7 +446,9 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
     let db = env.d1("DB")?;
     if method == Method::Get {
         if let Some(friend_id) = path.strip_prefix("/api/v1/friends/") {
-            if Uuid::parse_str(friend_id).is_err() {
+            // Real readers get a v4 UUID id, but the synthetic Shakespeare
+            // account (fixed id "shakespeare") is a valid friend too.
+            if friend_id != "shakespeare" && Uuid::parse_str(friend_id).is_err() {
                 return reply(json!({"error":"Friend not found"}), 404);
             }
             let allowed = db.prepare("SELECT 1 AS connected FROM reader_friends WHERE reader_id=? AND friend_id=?")
@@ -361,7 +457,7 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             if allowed.is_none() {
                 return reply(json!({"error":"That reader is not in your friends list."}), 404);
             }
-            let profile = db.prepare("SELECT id,name,goal FROM readers WHERE id=?")
+            let profile = db.prepare("SELECT id,name,goal,avatar_key FROM readers WHERE id=?")
                 .bind(&[arg(friend_id)])?.first::<Value>(None).await?;
             let mut library = rows(&db, "SELECT l.*,b.title,b.author,b.genre,b.pages,b.rating AS book_rating,b.isbn,b.color,b.description FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=? ORDER BY CASE l.status WHEN 'reading' THEN 0 WHEN 'did-not-finish' THEN 1 WHEN 'want' THEN 2 ELSE 3 END,l.updated_at DESC,b.title", vec![arg(friend_id)]).await?;
             normalize_ratings(&mut library);
@@ -490,17 +586,26 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         .await?;
         let friends = rows(
             &db,
-            "SELECT r.id,r.name,(SELECT l.book_id FROM library l WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1) AS book_id,(SELECT b.title FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1) AS book_title,COALESCE((SELECT CAST(MIN(100,MAX(0,l.page)*100/b.pages) AS INTEGER) FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1),0) AS progress FROM reader_friends rf JOIN readers r ON r.id=rf.friend_id WHERE rf.reader_id=? ORDER BY r.name",
+            "SELECT r.id,r.name,r.avatar_key,(SELECT l.book_id FROM library l WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1) AS book_id,(SELECT b.title FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1) AS book_title,COALESCE((SELECT CAST(MIN(100,MAX(0,l.page)*100/b.pages) AS INTEGER) FROM library l JOIN books b ON b.id=l.book_id WHERE l.reader_id=r.id AND l.status='reading' ORDER BY l.updated_at DESC,l.book_id LIMIT 1),0) AS progress FROM reader_friends rf JOIN readers r ON r.id=rf.friend_id WHERE rf.reader_id=? ORDER BY r.name",
+            vec![arg(id)],
+        )
+        .await?;
+        // The home feed's "latest chapter": friends' public notes, newest
+        // first. Private notes never leave their author (filtered in SQL,
+        // not just in the client).
+        let friend_notes = rows(
+            &db,
+            "SELECT n.id,n.reader_id,r.name,r.avatar_key,n.book_id,b.title,b.author,n.page,n.body,n.spoiler,n.created_at FROM notes n JOIN readers r ON r.id=n.reader_id JOIN books b ON b.id=n.book_id JOIN reader_friends rf ON rf.friend_id=n.reader_id AND rf.reader_id=? WHERE n.visibility='public' ORDER BY n.created_at DESC LIMIT 30",
             vec![arg(id)],
         )
         .await?;
         let profile = db
-            .prepare("SELECT name,username,goal FROM readers WHERE id=?")
+            .prepare("SELECT name,username,goal,avatar_key FROM readers WHERE id=?")
             .bind(&[arg(id)])?
             .first::<Value>(None)
             .await?;
         return reply(
-            json!({"reader_id":id,"profile":profile,"attributes":attributes(&library,&books),"paper_attributes":paper_attributes(&library,&books),"recommendations":recommendations(&books,&library,&swipes),"books":books,"library":library,"notes":notes,"likes":likes,"friends":friends,"demo_friends":false}),
+            json!({"reader_id":id,"profile":profile,"attributes":attributes(&library,&books),"paper_attributes":paper_attributes(&library,&books),"recommendations":recommendations(&books,&library,&swipes),"books":books,"library":library,"notes":notes,"likes":likes,"friends":friends,"friend_notes":friend_notes,"demo_friends":false}),
             200,
         );
     }
@@ -579,6 +684,34 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
                 .await?;
             return reply(json!({"ok":true}), 200);
         }
+        if path == "/api/v1/avatar" {
+            let bytes = req.bytes().await?;
+            if bytes.len() > 5_000_000 {
+                return reply(json!({"error":"Image is too large (5MB limit)"}), 413);
+            }
+            let content_type = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+                "image/jpeg"
+            } else if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+                "image/png"
+            } else {
+                return bad("Choose a JPEG or PNG image");
+            };
+            let key = format!("avatars/{id}");
+            let bucket = env.bucket("UPLOADS")?;
+            bucket
+                .put(&key, bytes)
+                .http_metadata(HttpMetadata {
+                    content_type: Some(content_type.into()),
+                    ..Default::default()
+                })
+                .execute()
+                .await?;
+            db.prepare("UPDATE readers SET avatar_key=? WHERE id=?")
+                .bind(&[arg(&key), arg(id)])?
+                .run()
+                .await?;
+            return reply(json!({"ok":true,"avatar_key":key}), 200);
+        }
     }
     let body = req.text().await?;
     let body_limit = if path == "/api/v1/import/goodreads" { 2_000_000 } else { 16000 };
@@ -647,20 +780,64 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         return reply(json!({"ok":true,"records":imported}), 201);
     }
     if path == "/api/v1/profile" && method == Method::Put {
-        let goal = int(&v, "goal");
-        let name = text(&v, "name").trim();
-        if !(1..=500).contains(&goal) || name.is_empty() || name.len() > 60 {
-            return bad("Enter a name and a goal between 1 and 500");
+        // Two callers share this endpoint: the reading-goal settings form
+        // (name + goal together) and self-serve profile editing (name and/or
+        // username, goal untouched) — each field is applied only if present.
+        let goal = v.get("goal").and_then(Value::as_i64);
+        let name = v.get("name").map(|_| text(&v, "name").trim().to_string());
+        let username = v
+            .get("username")
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_ascii_lowercase());
+        if let Some(g) = goal {
+            if !(1..=500).contains(&g) {
+                return bad("Goal must be between 1 and 500");
+            }
         }
-        db.prepare("UPDATE readers SET name=?,goal=? WHERE id=?")
-            .bind(&[arg(name), num(goal), arg(id)])?
+        if let Some(ref n) = name {
+            if n.is_empty() || n.chars().count() > 60 {
+                return bad("Enter a name between 1 and 60 characters");
+            }
+        }
+        if let Some(ref u) = username {
+            if !valid_username(u) {
+                return bad("Username must be 3–20 characters using letters, numbers, or underscores");
+            }
+        }
+        if goal.is_none() && name.is_none() && username.is_none() {
+            return bad("Nothing to update");
+        }
+        let result = db
+            .prepare("UPDATE readers SET name=COALESCE(?,name),goal=COALESCE(?,goal),username=COALESCE(?,username) WHERE id=?")
+            .bind(&[
+                name.as_deref().map(arg).unwrap_or(wasm_bindgen::JsValue::NULL),
+                goal.map(num).unwrap_or(wasm_bindgen::JsValue::NULL),
+                username.as_deref().map(arg).unwrap_or(wasm_bindgen::JsValue::NULL),
+                arg(id),
+            ])?
             .run()
-            .await?;
+            .await;
+        if let Err(error) = result {
+            if error.to_string().contains("UNIQUE constraint failed") {
+                return reply(
+                    json!({"error":"That username is already taken. Choose another one."}),
+                    409,
+                );
+            }
+            return Err(error);
+        }
         return reply(json!({"ok":true}), 200);
     }
     if path == "/api/v1/likes" && method == Method::Post {
+        // Activities are real notes (the reader's own or a friend's public
+        // one) — any other id is rejected rather than stored as junk.
         let activity = text(&v, "activity_id");
-        if !["maya", "james", "sophie", "leo"].contains(&activity) {
+        let exists = db
+            .prepare("SELECT 1 FROM notes WHERE id=?")
+            .bind(&[arg(activity)])?
+            .first::<Value>(None)
+            .await?;
+        if exists.is_none() {
             return bad("Unknown activity");
         }
         let liked = v["liked"].as_bool().unwrap_or(false);
@@ -942,12 +1119,21 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         } else {
             page
         };
+        // Built up client-side as a paper's pages are read (keyword hits per
+        // subtopic); optional, and merged rather than overwritten when absent
+        // so a plain progress update never erases prior signal.
+        let topic_signals = match v.get("topic_signals") {
+            Some(Value::Object(m)) if serde_json::to_string(m).map(|s| s.len()).unwrap_or(9999) <= 3000 => {
+                Some(serde_json::to_string(m).unwrap_or_default())
+            }
+            _ => None,
+        };
         db.batch(vec![
             // Leaving the finished shelf also leaves the ranking; close the gap it left behind.
             db.prepare("UPDATE library SET rank_position=rank_position-1 WHERE reader_id=? AND ?!='read' AND rank_position > (SELECT rank_position FROM library WHERE reader_id=? AND book_id=?)")
                 .bind(&[arg(id), arg(status), arg(id), arg(book_id)])?,
-            db.prepare("INSERT INTO library(reader_id,book_id,status,page,review,started_at,finished_at) VALUES (?,?,?,?,?,CASE WHEN ? IN ('reading','read','did-not-finish') THEN CURRENT_TIMESTAMP ELSE NULL END,CASE WHEN ?='read' THEN CURRENT_TIMESTAMP ELSE NULL END) ON CONFLICT(reader_id,book_id) DO UPDATE SET status=excluded.status,page=excluded.page,review=excluded.review,rank_position=CASE WHEN excluded.status='read' THEN library.rank_position ELSE NULL END,updated_at=CURRENT_TIMESTAMP,started_at=CASE WHEN excluded.status='reading' THEN COALESCE(library.started_at,CURRENT_TIMESTAMP) WHEN excluded.status='want' THEN NULL ELSE library.started_at END,finished_at=CASE WHEN excluded.status='read' THEN COALESCE(library.finished_at,CURRENT_TIMESTAMP) ELSE NULL END")
-                .bind(&[arg(id),arg(book_id),arg(status),num(p),arg(review),arg(status),arg(status)])?,
+            db.prepare("INSERT INTO library(reader_id,book_id,status,page,review,topic_signals,started_at,finished_at) VALUES (?,?,?,?,?,COALESCE(?,'{}'),CASE WHEN ? IN ('reading','read','did-not-finish') THEN CURRENT_TIMESTAMP ELSE NULL END,CASE WHEN ?='read' THEN CURRENT_TIMESTAMP ELSE NULL END) ON CONFLICT(reader_id,book_id) DO UPDATE SET status=excluded.status,page=excluded.page,review=excluded.review,topic_signals=COALESCE(?,library.topic_signals),rank_position=CASE WHEN excluded.status='read' THEN library.rank_position ELSE NULL END,updated_at=CURRENT_TIMESTAMP,started_at=CASE WHEN excluded.status='reading' THEN COALESCE(library.started_at,CURRENT_TIMESTAMP) WHEN excluded.status='want' THEN NULL ELSE library.started_at END,finished_at=CASE WHEN excluded.status='read' THEN COALESCE(library.finished_at,CURRENT_TIMESTAMP) ELSE NULL END")
+                .bind(&[arg(id),arg(book_id),arg(status),num(p),arg(review),opt_arg(&topic_signals),arg(status),arg(status),opt_arg(&topic_signals)])?,
         ])
         .await?;
         return reply(json!({"ok":true}), 200);

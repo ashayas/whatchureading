@@ -22,7 +22,8 @@
     "setup": "node scripts/setup.mjs",
     "selfhost": "node scripts/selfhost-entry.mjs",
     "check:public": "node scripts/check-public.mjs",
-    "sync:openlibrary": "node scripts/openlibrary-sync.mjs"
+    "sync:openlibrary": "node --max-old-space-size=6144 scripts/openlibrary-sync.mjs",
+    "backfill:openlibrary": "node --max-old-space-size=8192 scripts/openlibrary-backfill.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",

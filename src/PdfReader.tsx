@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle } from "lucide-react";
 import type { Book, Thought } from "./types";
-import { apiUploadPdf } from "./types";
+import { apiUploadPdf, PAPER_SUBTOPICS } from "./types";
 
 // Lazily imported so the (fairly large) pdf.js bundle only loads when a PDF is actually opened.
 export async function loadPdfjs() {
@@ -41,6 +41,11 @@ export function PdfReader({
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
+  // Subtopic keyword hits accumulated as pages are read, for a smarter
+  // per-paper radar than the single topic picked at upload time.
+  const topicSignals = useRef<Record<string, number>>({});
+  const subtopics =
+    book.kind === "paper" && book.topic ? PAPER_SUBTOPICS[book.topic] : [];
 
   useEffect(() => {
     let cancelled = false;
@@ -48,6 +53,7 @@ export function PdfReader({
     resumedOnce.current = false;
     rendered.current = new Set();
     pageRefs.current = new Map();
+    topicSignals.current = {};
     (async () => {
       try {
         const [pdfjsLib, blob] = await Promise.all([
@@ -93,6 +99,28 @@ export function PdfReader({
           if (!ctx) return;
           await pdfPage.render({ canvas, canvasContext: ctx, viewport })
             .promise;
+          if (subtopics.length) {
+            try {
+              const content = await pdfPage.getTextContent();
+              const pageText = content.items
+                .map((it) => ("str" in it ? it.str : ""))
+                .join(" ")
+                .toLowerCase();
+              for (const { label, keywords } of subtopics) {
+                const hits = keywords.reduce(
+                  (sum, kw) => sum + pageText.split(kw).length - 1,
+                  0,
+                );
+                if (hits > 0) {
+                  topicSignals.current[label] =
+                    (topicSignals.current[label] || 0) + hits;
+                }
+              }
+            } catch {
+              // Text extraction is a best-effort enhancement; a scanned or
+              // malformed page simply contributes no subtopic signal.
+            }
+          }
         };
         const lazyObserver = new IntersectionObserver(
           (entries) => {
@@ -122,7 +150,14 @@ export function PdfReader({
               mutate(
                 "library",
                 "PUT",
-                { book_id: book.id, status: "reading", page: n },
+                {
+                  book_id: book.id,
+                  status: "reading",
+                  page: n,
+                  ...(subtopics.length
+                    ? { topic_signals: { ...topicSignals.current } }
+                    : {}),
+                },
                 undefined,
               );
             }, 2000);

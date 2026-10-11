@@ -317,6 +317,24 @@ button h3 {
   height: 30px;
   font-size: 10px;
 }
+.avatar-photo {
+  object-fit: cover;
+  background: #e9e4d6;
+}
+.avatar-picker {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 14px 0 20px;
+}
+.avatar-picker .avatar {
+  width: 52px;
+  height: 52px;
+}
+.avatar-picker label.disabled {
+  opacity: 0.6;
+  pointer-events: none;
+}
 .avatar.sage {
   background: #d1dfc5;
   color: #536b44;
@@ -442,6 +460,17 @@ main {
   position: relative;
   display: flex;
   margin-bottom: 33px;
+}
+.hero-secondary {
+  min-height: 190px;
+  margin-top: 8px;
+  margin-bottom: 0;
+}
+.hero-secondary .hero-copy {
+  padding: 22px 30px;
+}
+.hero-secondary h2 {
+  font-size: 1.5em;
 }
 .hero-copy {
   position: relative;

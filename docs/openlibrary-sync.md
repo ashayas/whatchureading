@@ -63,11 +63,36 @@ free-tier write allowance:
   repositories, not in a Cloudflare Worker — Workers' memory/CPU limits
   can't stream-process a multi-gigabyte dump file.
 
-## Running it
+## One-time backfill vs. the monthly sync
+
+The very first load (table empty, tens of millions of inserts) is a
+different shape of problem than the monthly incremental diff, so it's a
+separate script: `scripts/openlibrary-backfill.mjs` (`npm run
+backfill:openlibrary`). It streams rows straight to a handful of
+~1M-row SQL files and pushes each through D1's Import REST API (one
+server-side ingest job per file — the same thing `wrangler d1 execute
+--remote --file` already does internally for every file, so this needs
+no extra credentials beyond the usual `wrangler` OAuth login and
+`CLOUDFLARE_ACCOUNT_ID`) instead of driving thousands of small `wrangler
+d1 execute` calls, and it creates the two secondary indexes only after
+the bulk load instead of maintaining them row-by-row. Run `node
+scripts/openlibrary-backfill.mjs smoke-test` first to verify end-to-end
+write access before committing to the full run. It's resumable:
+intermediate files live in a fixed `os.tmpdir()` path, so a crash after the
+download/filter phase doesn't force a redownload.
+
+Once the backfill has run once and published a snapshot to R2, every
+month after that is a small diff and the regular sync job below handles
+it.
+
+## Running the monthly sync
 
 - Scheduled automatically: `.github/workflows/openlibrary-sync.yml` runs on
-  the 1st of each month via `cron`, no manual trigger needed. It also
-  supports `workflow_dispatch` for an on-demand run from the Actions tab.
+  the 11th of each month via `cron` — a 10-day buffer after Open Library's
+  own monthly dump cadence (around the 1st), so the dump this job fetches
+  is the finished one, not a possibly still-generating one. No manual
+  trigger needed; it also supports `workflow_dispatch` for an on-demand run
+  from the Actions tab.
 - Requires two GitHub repository secrets: `CLOUDFLARE_API_TOKEN` (a token
   scoped to D1 + R2 edit on the `ashaya` account only — never a global
   token) and `CLOUDFLARE_ACCOUNT_ID`.

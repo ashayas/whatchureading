@@ -2,9 +2,11 @@ name: Open Library sync
 
 on:
   schedule:
-    # 07:00 UTC on the 1st of every month, matching Open Library's own
-    # monthly dump cadence. Runs unattended; no manual trigger needed.
-    - cron: "0 7 1 * *"
+    # 07:00 UTC on the 11th of every month — a 10-day buffer after Open
+    # Library's own monthly dump cadence (around the 1st), so the dump this
+    # job fetches is the finished one, not a possibly still-generating one.
+    # Runs unattended; no manual trigger needed.
+    - cron: "0 7 11 * *"
   workflow_dispatch: {}
 
 permissions:
@@ -21,7 +23,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: node scripts/openlibrary-sync.mjs
+      - run: npm run sync:openlibrary
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

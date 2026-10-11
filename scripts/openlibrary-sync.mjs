@@ -194,13 +194,33 @@ function deleteStatement(ids) {
   return `DELETE FROM editions WHERE id IN (${ids.map(sqlString).join(",")});`;
 }
 
-function applyStatements(statements, tmpDir, label) {
-  for (let i = 0; i < statements.length; i += STATEMENTS_PER_FILE) {
-    const chunk = statements.slice(i, i + STATEMENTS_PER_FILE);
-    const file = path.join(tmpDir, `diff-${label}-${i}.sql`);
-    fs.writeFileSync(file, chunk.join("\n"));
-    wrangler(["d1", "execute", DATABASE, "--remote", "--file", file]);
-  }
+// Writes statements to disk and applies them to D1 as it goes, STATEMENTS_PER_FILE
+// at a time, instead of buffering every statement for the whole diff in memory
+// first. A monthly diff is normally small, but this keeps an unusually large
+// diff (e.g. an upstream Open Library reformat) from repeating the backfill's
+// OOM failure mode.
+function makeBatchApplier(tmpDir, label) {
+  let fileIndex = 0;
+  let countInFile = 0;
+  let filePath = path.join(tmpDir, `diff-${label}-${fileIndex}.sql`);
+  let out = fs.createWriteStream(filePath);
+  return {
+    async add(statement) {
+      out.write(statement + "\n");
+      countInFile++;
+      if (countInFile === STATEMENTS_PER_FILE) await this.flush();
+    },
+    async flush() {
+      if (countInFile === 0) return;
+      await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
+      wrangler(["d1", "execute", DATABASE, "--remote", "--file", filePath]);
+      fs.rmSync(filePath, { force: true });
+      fileIndex++;
+      countInFile = 0;
+      filePath = path.join(tmpDir, `diff-${label}-${fileIndex}.sql`);
+      out = fs.createWriteStream(filePath);
+    },
+  };
 }
 
 async function main() {
@@ -221,8 +241,8 @@ async function main() {
     const previous = await loadPreviousFingerprints(tmpDir);
     console.log(`Previous snapshot had ${previous.size} editions.`);
 
+    const upsertApplier = makeBatchApplier(tmpDir, "upsert");
     const upsertRows = [];
-    const upsertStatements = [];
     let inserted = 0;
     let updated = 0;
     const rl = readline.createInterface({ input: fs.createReadStream(currentPath), crlfDelay: Infinity });
@@ -239,22 +259,20 @@ async function main() {
       previous.delete(record.id);
       upsertRows.push(record);
       if (upsertRows.length === ROWS_PER_UPSERT_STATEMENT) {
-        upsertStatements.push(upsertStatement(upsertRows.splice(0)));
+        await upsertApplier.add(upsertStatement(upsertRows.splice(0)));
       }
     }
-    if (upsertRows.length) upsertStatements.push(upsertStatement(upsertRows));
+    if (upsertRows.length) await upsertApplier.add(upsertStatement(upsertRows));
+    await upsertApplier.flush();
 
+    const deleteApplier = makeBatchApplier(tmpDir, "delete");
     const removedIds = [...previous.keys()];
-    const deleteStatements = [];
     for (let i = 0; i < removedIds.length; i += IDS_PER_DELETE_STATEMENT) {
-      deleteStatements.push(deleteStatement(removedIds.slice(i, i + IDS_PER_DELETE_STATEMENT)));
+      await deleteApplier.add(deleteStatement(removedIds.slice(i, i + IDS_PER_DELETE_STATEMENT)));
     }
+    await deleteApplier.flush();
 
-    console.log(`Diff: ${inserted} new, ${updated} changed, ${removedIds.length} removed.`);
-    console.log(`Applying ${upsertStatements.length} upsert statement(s) ...`);
-    applyStatements(upsertStatements, tmpDir, "upsert");
-    console.log(`Applying ${deleteStatements.length} delete statement(s) ...`);
-    applyStatements(deleteStatements, tmpDir, "delete");
+    console.log(`Diff applied: ${inserted} new, ${updated} changed, ${removedIds.length} removed.`);
 
     console.log("Publishing this month's snapshot to R2 for next month's diff ...");
     const snapshotGz = path.join(tmpDir, "snapshot.ndjson.gz");
