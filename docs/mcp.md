@@ -27,7 +27,7 @@ single-button flow — no list of named tokens to manage.
 | `get_library()` | Lists the reader's shelf: status, page, and review per book. |
 | `add_to_want_to_read(open_library_key,title,author,pages,cover_id?)` | Imports the book if new (mirrors `POST /books/import`) and sets it to the `want` shelf. |
 | `update_reading_progress(book_id,status,page,review?)` | Mirrors `PUT /library`: replaces shelf status/page, forces the final page on `read`, zeroes the page on `want`/`did-not-finish`. Unlike the raw API, omitting `review` here keeps the existing one instead of clearing it — friendlier for an agent that doesn't know the current review text. |
-| `add_comment(book_id,page,body,spoiler?,visibility?)` | Mirrors `POST /notes`: a page-anchored thought, public by default. |
+| `add_comment(book_id,page,body,spoiler?,visibility?)` | Mirrors `POST /notes`: a page-anchored thought, public by default. If the book isn't on the reader's shelf yet, it's added to `reading` first, then the comment is attached — a comment always implies a shelf entry, same as the REST endpoint. |
 
 ## Authentication
 

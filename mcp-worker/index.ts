@@ -154,10 +154,17 @@ function createServer(db: D1Database, readerId: string) {
       const book = await db.prepare("SELECT pages FROM books WHERE id=?").bind(book_id).first<Book>();
       if (!book) return textContent("Book not found. Use search_books / add_to_want_to_read first.");
       if (page > book.pages) return textContent(`That book only has ${book.pages} pages.`);
-      await db
-        .prepare("INSERT INTO notes(id,reader_id,book_id,page,body,spoiler,visibility) VALUES (?,?,?,?,?,?,?)")
-        .bind(crypto.randomUUID(), readerId, book_id, page, body.trim(), spoiler ? 1 : 0, visibility)
-        .run();
+      await db.batch([
+        // A comment implies the reader is engaging with the book; if it
+        // isn't on their shelf yet, put it on "reading" first rather than
+        // rejecting the comment outright.
+        db
+          .prepare("INSERT OR IGNORE INTO library(reader_id,book_id,status,page,review,started_at) VALUES (?,?,'reading',0,'',CURRENT_TIMESTAMP)")
+          .bind(readerId, book_id),
+        db
+          .prepare("INSERT INTO notes(id,reader_id,book_id,page,body,spoiler,visibility) VALUES (?,?,?,?,?,?,?)")
+          .bind(crypto.randomUUID(), readerId, book_id, page, body.trim(), spoiler ? 1 : 0, visibility),
+      ]);
       return textContent("Comment added.");
     },
   );

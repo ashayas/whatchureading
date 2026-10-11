@@ -1909,23 +1909,6 @@ select {
   gap: 8px;
   margin: 19px 0;
 }
-.agent-token-card {
-  border-top: 1px solid #e7ecdc;
-  margin-top: 22px;
-  padding-top: 18px;
-}
-.agent-token-card .section-heading h3 {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #42583b;
-  margin: 0 0 8px;
-}
-.agent-token-card p {
-  margin: 0 0 12px;
-}
 .agent-token-value {
   display: flex;
   align-items: flex-start;
@@ -1946,11 +1929,6 @@ select {
   word-break: break-all;
   white-space: pre-wrap;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
-}
-.agent-token-value .icon-button {
-  flex-shrink: 0;
-  min-width: 36px;
-  min-height: 36px;
 }
 input:not([type="checkbox"]):not([type="range"]),
 textarea {

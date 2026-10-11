@@ -14,7 +14,7 @@ D1 exclusively stores application users/metadata and reading data. Supabase stor
 | PUT | `/library` | `{book_id,status:"reading"\|"want"\|"read"\|"did-not-finish",page,review?:string}`. Replaces shelf fields; include current review to preserve it. Finished forces final page. Leaving the `read` shelf clears the book's ranking. |
 | PUT | `/library/rank` | `{book_id,rank_position:0..N}`. Inserts/moves a finished book at `rank_position` among the reader's ranked finished books (0 = favorite), shifting the rest. 400 if the book isn't on the `read` shelf. |
 | DELETE | `/library` | `{book_id}`. Removes shelf entry and swipe; preserves notes. Closes any ranking gap it leaves. |
-| POST | `/notes` | `{book_id,page,body,spoiler?:boolean,visibility?:"public"\|"private"}`. Page-anchored thought; defaults to public. Private notes are never shown to friends. |
+| POST | `/notes` | `{book_id,page,body,spoiler?:boolean,visibility?:"public"\|"private"}`. Page-anchored thought; defaults to public. Private notes are never shown to friends. If the book isn't already on the reader's shelf, it's added to `reading` first. |
 | POST | `/uploads` | `{title,author,kind:"book"\|"paper",pages}`. Creates a personal (unshared) book/paper entry for an uploaded PDF; returns `{id,content_key}`. |
 | PUT | `/uploads/:id/content` | Raw PDF bytes (`Content-Type: application/pdf`), owner-only, 40MB limit. |
 | GET | `/uploads/:id/content` | Streams the uploaded PDF back, owner-only. |

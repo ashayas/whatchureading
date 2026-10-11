@@ -386,9 +386,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     [username, setUsername] = useState(""),
     [avatarBusy, setAvatarBusy] = useState(false),
     [goal, setGoal] = useState(24),
-    [agentToken, setAgentToken] = useState<string | null>(null),
-    [agentTokenCreatedAt, setAgentTokenCreatedAt] = useState<string | null>(null),
-    [agentTokenBusy, setAgentTokenBusy] = useState(false),
+    [agentModalOpen, setAgentModalOpen] = useState(false),
     [goodreadsImportOpen, setGoodreadsImportOpen] = useState(() =>
       initialData.library.length === 0 && localStorage.getItem("wcr.goodreads-onboarding-seen") !== "1",
     ),
@@ -472,24 +470,6 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     setToast(msg);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(""), 3500);
-  }
-  async function createAgentToken() {
-    setAgentTokenBusy(true);
-    try {
-      const r = await api<{ token: string; created_at: string }>("agent-token", "POST", {});
-      setAgentToken(r.token);
-      setAgentTokenCreatedAt(r.created_at);
-    } catch (e) {
-      notify((e as Error).message);
-    } finally {
-      setAgentTokenBusy(false);
-    }
-  }
-  function copyToClipboard(text: string, message: string) {
-    navigator.clipboard
-      .writeText(text)
-      .then(() => notify(message))
-      .catch(() => notify("Could not copy. Select and copy it manually."));
   }
   async function mutate(
     path: string,
@@ -906,11 +886,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                           setName(data.profile.name);
                           setUsername(data.profile.username || "");
                           setGoal(data.profile.goal);
-                          setAgentToken(null);
                           setSettings(true);
-                          void api<{ exists: boolean; created_at: string | null }>("agent-token")
-                            .then((r) => setAgentTokenCreatedAt(r.exists ? r.created_at : null))
-                            .catch(() => setAgentTokenCreatedAt(null));
                         }}
                       >
                         <Settings2 size={16} />
@@ -1650,6 +1626,9 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                 >
                   <Settings2 size={16} /> Edit profile
                 </button>
+                <button className="outline" onClick={() => setAgentModalOpen(true)}>
+                  <Bot size={16} /> Add to your AI agent
+                </button>
                 <button className="primary" onClick={() => setGoodreadsImportOpen(true)}>
                   <FileSpreadsheet size={16} /> Bring in Goodreads
                 </button>
@@ -1934,39 +1913,16 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
               Save profile <Check size={16} />
             </button>
           </form>
-          <section className="agent-token-card">
-            <div className="section-heading">
-              <h3><Bot size={16} /> AI agents</h3>
-            </div>
-            {agentToken ? (
-              <>
-                <p>Copy this token now — it won't be shown again. Paste it into your agent's MCP config, or copy the ready-made config block below.</p>
-                <div className="agent-token-value">
-                  <code>{agentToken}</code>
-                  <button type="button" className="icon-button" aria-label="Copy token" onClick={() => copyToClipboard(agentToken, "Token copied")}>
-                    <Copy size={15} />
-                  </button>
-                </div>
-                <div className="agent-token-value">
-                  <pre>{mcpConfigSnippet(agentToken)}</pre>
-                  <button type="button" className="icon-button" aria-label="Copy MCP config" onClick={() => copyToClipboard(mcpConfigSnippet(agentToken), "Config copied")}>
-                    <Copy size={15} />
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p>
-                  {agentTokenCreatedAt
-                    ? `Connected since ${new Date(agentTokenCreatedAt).toLocaleDateString()}. Regenerating replaces your current token — update it everywhere you've pasted it.`
-                    : "Let Claude, ChatGPT, or another AI agent track your progress, add books, and leave comments on your behalf."}
-                </p>
-                <button type="button" className="outline" disabled={agentTokenBusy} onClick={() => void createAgentToken()}>
-                  {agentTokenBusy ? <><Loader2 className="spin" size={16} /> Generating…</> : agentTokenCreatedAt ? "Regenerate token" : "Add to your AI agent"}
-                </button>
-              </>
-            )}
-          </section>
+          <button
+            type="button"
+            className="outline"
+            onClick={() => {
+              setSettings(false);
+              setAgentModalOpen(true);
+            }}
+          >
+            <Bot size={16} /> Add to your AI agent
+          </button>
           <button
             className="auth-text-button"
             onClick={() => void signOut().catch((e) => notify(e.message))}
@@ -1984,6 +1940,9 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
           refresh={refresh}
           notify={notify}
         />
+      )}
+      {agentModalOpen && (
+        <AgentModal close={() => setAgentModalOpen(false)} notify={notify} />
       )}
       {uploadOpen && (
         <UploadModal
@@ -2281,6 +2240,152 @@ function GoodreadsImportModal({
         </>
       ) : (
           <div className="import-complete"><span className="import-check"><Check size={26} /></span><span className="eyebrow">YOUR SHELVES ARE HERE</span><h2>Welcome back, books.</h2><p>{records.length} books are now part of your reading life. You can update any shelf whenever you like.</p><button className="primary" onClick={dismiss}>See my library <ArrowRight size={16} /></button></div>
+      )}
+    </Modal>
+  );
+}
+function AgentModal({
+  close,
+  notify,
+}: {
+  close: () => void;
+  notify: (message: string) => void;
+}) {
+  const [token, setToken] = useState<string | null>(null);
+  const [createdAt, setCreatedAt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void api<{ exists: boolean; created_at: string | null }>("agent-token")
+      .then((r) => {
+        if (!cancelled) setCreatedAt(r.exists ? r.created_at : null);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const connect = async () => {
+    setBusy(true);
+    try {
+      const r = await api<{ token: string; created_at: string }>("agent-token", "POST", {});
+      setToken(r.token);
+      setCreatedAt(r.created_at);
+    } catch (e) {
+      notify((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const copy = (text: string, message: string) => {
+    navigator.clipboard
+      .writeText(text)
+      .then(() => notify(message))
+      .catch(() => notify("Could not copy. Select and copy it manually."));
+  };
+  return (
+    <Modal close={close} wide>
+      <span className="eyebrow">TALK TO YOUR SHELF FROM ANYWHERE</span>
+      <h2>Bring your AI agent home.</h2>
+      <p className="import-lede">
+        Claude, ChatGPT, or any MCP-compatible agent can track your progress, add books to want-to-read, and leave comments — using a personal token that
+        stays on your device.
+      </p>
+      {loading ? (
+        <p className="import-bridge-status" role="status">
+          <Loader2 className="spin" size={14} /> Checking your connection…
+        </p>
+      ) : token ? (
+        <>
+          <div className="goodreads-steps">
+            <div className="goodreads-step">
+              <span>1</span>
+              <div>
+                <b>Copy your token</b>
+                <small>It won't be shown again — paste it somewhere safe if you're not configuring your agent right now.</small>
+              </div>
+              <button type="button" className="outline" onClick={() => copy(token, "Token copied")}>
+                Copy token <Copy size={14} />
+              </button>
+            </div>
+            <div className="goodreads-step">
+              <span>2</span>
+              <div>
+                <b>Copy the MCP config</b>
+                <small>A ready-made block for Claude Code, Claude Desktop, or ChatGPT's MCP settings.</small>
+              </div>
+              <button type="button" className="outline" onClick={() => copy(mcpConfigSnippet(token), "Config copied")}>
+                Copy config <Copy size={14} />
+              </button>
+            </div>
+            <div className="goodreads-step">
+              <span>3</span>
+              <div>
+                <b>Paste it into your agent</b>
+                <small>Add it to your agent's MCP server config, then ask it about your shelf.</small>
+              </div>
+            </div>
+          </div>
+          <div className="agent-token-value">
+            <code>{token}</code>
+          </div>
+          <div className="agent-token-value">
+            <pre>{mcpConfigSnippet(token)}</pre>
+          </div>
+          <div className="modal-actions">
+            <button className="outline" onClick={close}>
+              Done
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="goodreads-steps">
+            <div className="goodreads-step">
+              <span>1</span>
+              <div>
+                <b>{createdAt ? "Regenerate your token" : "Generate your token"}</b>
+                <small>
+                  {createdAt
+                    ? `Connected since ${new Date(createdAt).toLocaleDateString()}. Regenerating replaces it everywhere you've pasted it.`
+                    : "A personal token your agent uses to reach your shelf — never your account password."}
+                </small>
+              </div>
+              <button type="button" className="outline" disabled={busy} onClick={() => void connect()}>
+                {busy ? (
+                  <>
+                    <Loader2 className="spin" size={14} /> Generating…
+                  </>
+                ) : (
+                  <>{createdAt ? "Regenerate" : "Start"} <ArrowRight size={14} /></>
+                )}
+              </button>
+            </div>
+            <div className="goodreads-step">
+              <span>2</span>
+              <div>
+                <b>Copy the config</b>
+                <small>We'll hand you a ready-made MCP config block to paste into your agent.</small>
+              </div>
+            </div>
+            <div className="goodreads-step">
+              <span>3</span>
+              <div>
+                <b>Ask it about your shelf</b>
+                <small>Your agent can now check progress, add books, and leave comments on your behalf.</small>
+              </div>
+            </div>
+          </div>
+          <div className="modal-actions">
+            <button className="outline" onClick={close}>
+              Close
+            </button>
+          </div>
+        </>
       )}
     </Modal>
   );

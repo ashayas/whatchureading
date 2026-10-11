@@ -1197,23 +1197,29 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             return bad("A thought needs text and a valid page");
         }
         let note_id = Uuid::new_v4().to_string();
-        db.prepare(
-            "INSERT INTO notes(id,reader_id,book_id,page,body,spoiler,visibility) VALUES (?,?,?,?,?,?,?)",
-        )
-        .bind(&[
-            arg(&note_id),
-            arg(id),
-            arg(book_id),
-            num(page),
-            arg(note),
-            num(if v["spoiler"].as_bool().unwrap_or(false) {
-                1
-            } else {
-                0
-            }),
-            arg(visibility),
-        ])?
-        .run()
+        db.batch(vec![
+            // A comment implies the reader is engaging with the book; if it
+            // isn't on their shelf yet, put it on "reading" first rather than
+            // rejecting the comment outright.
+            db.prepare("INSERT OR IGNORE INTO library(reader_id,book_id,status,page,review,started_at) VALUES (?,?,'reading',0,'',CURRENT_TIMESTAMP)")
+                .bind(&[arg(id), arg(book_id)])?,
+            db.prepare(
+                "INSERT INTO notes(id,reader_id,book_id,page,body,spoiler,visibility) VALUES (?,?,?,?,?,?,?)",
+            )
+            .bind(&[
+                arg(&note_id),
+                arg(id),
+                arg(book_id),
+                num(page),
+                arg(note),
+                num(if v["spoiler"].as_bool().unwrap_or(false) {
+                    1
+                } else {
+                    0
+                }),
+                arg(visibility),
+            ])?,
+        ])
         .await?;
         return reply(json!({"ok":true,"id":note_id}), 201);
     }
