@@ -22,6 +22,8 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/build ./build
 COPY --from=build --chown=node:node /app/migrations ./migrations
 COPY --from=build --chown=node:node /app/wrangler.selfhost.jsonc ./wrangler.selfhost.jsonc
+COPY --from=build --chown=node:node /app/mcp.wrangler.selfhost.jsonc ./mcp.wrangler.selfhost.jsonc
+COPY --from=build --chown=node:node /app/mcp-worker ./mcp-worker
 COPY --from=build --chown=node:node /app/scripts/selfhost-entry.mjs ./scripts/selfhost-entry.mjs
 RUN mkdir /data && chown node:node /data /app
 USER node

@@ -6,6 +6,7 @@
 .dev.vars
 .dev.vars.*
 wrangler.jsonc
+mcp.wrangler.jsonc
 node_modules
 .wrangler
 target

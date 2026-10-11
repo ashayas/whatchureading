@@ -41,6 +41,8 @@ Expose the Service through your own ingress or gateway and configure Supabase wi
 
 Both self-hosted options run the same API and frontend as the default Cloudflare deployment. They use the separate [`wrangler.selfhost.jsonc`](wrangler.selfhost.jsonc) configuration and the persistent local runtime state. The standard [`wrangler.example.jsonc`](wrangler.example.jsonc), `npm run setup`, D1 migrations, and `npm run deploy` remain the path for the project hosted on Cloudflare.
 
+The same container also runs the [MCP server](docs/mcp.md) that lets AI agents track reading progress, add books, and leave comments. It's a second Worker (`mcp-worker/`, its own `mcp.wrangler.selfhost.jsonc`) sharing the same local D1 data, multiplexed onto the one exposed port by a small reverse proxy in `scripts/selfhost-entry.mjs`: requests to `/mcp` go to the MCP Worker, everything else goes to the app Worker. One `docker compose up` (or one Kubernetes pod) gets you both — no second container, no second port to expose. The "Add to your AI agent" button in settings detects it's running on a self-hosted origin and points the generated config at that same origin's `/mcp` instead of the hosted `mcp.whatchureading.com` subdomain.
+
 ## Features
 
 - Book-page signup/login flow with continuous page flipping while the app loads.
