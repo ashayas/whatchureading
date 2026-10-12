@@ -1,38 +1,93 @@
-import math
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 W, H = 1200, 630
 
-# Base dark forest green canvas
-base = Image.new("RGBA", (W, H), (22, 42, 35, 255)) # deep editorial green #162a23
+# Load AI image
+ai_img = Image.open('public/og-illustration.jpg').convert('RGBA')
 
-# Radial ambient glow behind the logo
-glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-glow_draw = ImageDraw.Draw(glow)
-center_x, center_y = 960, 300
-for r in range(450, 0, -4):
-    alpha = int(38 * (1 - r / 450.0) ** 1.6)
-    glow_draw.ellipse(
-        (center_x - r, center_y - r, center_x + r, center_y + r),
-        fill=(220, 231, 155, alpha) # chartreuse ambient light
-    )
-base = Image.alpha_composite(base, glow)
+# Shift crop to the right so the open book and star are on the right 60% of the banner
+# ai_img is 1376x768.
+# Let's crop from x=120 to 1376, y=20 to 740
+crop_box = (140, 25, 1376, 735)
+cropped = ai_img.crop(crop_box)
+resized = cropped.resize((W, H), Image.Resampling.LANCZOS)
 
-# Secondary ambient glow on bottom left
-glow2 = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-glow2_draw = ImageDraw.Draw(glow2)
-for r in range(400, 0, -5):
-    alpha = int(24 * (1 - r / 400.0) ** 2)
-    glow2_draw.ellipse(
-        (120 - r, 520 - r, 120 + r, 520 + r),
-        fill=(52, 98, 82, alpha)
-    )
-base = Image.alpha_composite(base, glow2)
+# Create a smooth dark gradient overlay on the left
+overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+ov_draw = ImageDraw.Draw(overlay)
 
-draw = ImageDraw.Draw(base)
+# Left gradient from solid #152820 to transparent across the book
+for x in range(W):
+    if x < 400:
+        alpha = 248
+    elif x < 720:
+        t = (x - 400) / (720 - 400)
+        alpha = int(248 * (1 - t)**1.6)
+    else:
+        alpha = 0
+    ov_draw.line([(x, 0), (x, H)], fill=(18, 36, 29, alpha))
 
-# Sparkle drawing function
-def draw_sparkle(draw_ctx, cx, cy, r_outer, r_inner, color):
+# Top and bottom subtle vignettes
+for y in range(70):
+    alpha = int(120 * (1 - y/70.0))
+    ov_draw.line([(0, y), (W, y)], fill=(14, 28, 23, alpha))
+
+for y in range(H - 60, H):
+    alpha = int(140 * ((y - (H - 60)) / 60.0))
+    ov_draw.line([(0, y), (W, y)], fill=(14, 28, 23, alpha))
+
+composite = Image.alpha_composite(resized, overlay)
+draw = ImageDraw.Draw(composite)
+
+# Draw elegant framing
+border_color = (220, 231, 155, 60)
+draw.rounded_rectangle((28, 28, W - 28, H - 28), radius=16, outline=border_color, width=1)
+
+# Fonts
+font_logo = ImageFont.truetype("/System/Library/Fonts/Supplemental/Georgia Bold.ttf", 36)
+font_eyebrow = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 13)
+font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Georgia.ttf", 54)
+font_title_italic = ImageFont.truetype("/System/Library/Fonts/Supplemental/Georgia Italic.ttf", 54)
+font_sub = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 19)
+font_pill = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 13)
+font_badge = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 12)
+
+# Top brand
+draw.text((64, 56), "whatchu", font=font_logo, fill=(250, 247, 242, 255))
+w1 = draw.textlength("whatchu", font=font_logo)
+draw.text((64 + w1 + 8, 56), "reading", font=font_logo, fill=(250, 247, 242, 255))
+w2 = draw.textlength("reading", font=font_logo)
+draw.text((64 + w1 + 8 + w2, 56), ".", font=font_logo, fill=(220, 231, 155, 255))
+
+# Top pill
+badge_text = "OPEN SOURCE  ·  NO ADS  ·  NO AMAZON"
+bw = draw.textlength(badge_text, font=font_badge)
+draw.rounded_rectangle((W - 64 - bw - 28, 58, W - 64, 58 + 32), radius=16, fill=(24, 46, 38, 230), outline=(220, 231, 155, 90), width=1)
+draw.text((W - 64 - bw - 14, 66), badge_text, font=font_badge, fill=(220, 231, 155, 255))
+
+# Eyebrow
+draw.text((64, 150), "A LITTLE LESS SCROLLING. A LITTLE MORE READING.", font=font_eyebrow, fill=(220, 231, 155, 230))
+
+# Headline
+draw.text((64, 182), "Find your next ", font=font_title, fill=(252, 250, 247, 255))
+wf = draw.textlength("Find your next ", font=font_title)
+draw.text((64 + wf, 182), "chapter.", font=font_title_italic, fill=(220, 231, 155, 255))
+
+draw.text((64, 248), "Own your reading life.", font=font_title, fill=(252, 250, 247, 255))
+
+# Subtitle
+sub_lines = [
+    "A calm, reader-first alternative to Goodreads.",
+    "Track shelves, read papers, share thoughts with",
+    "friends — backed by open data, with zero ads."
+]
+sy = 332
+for line in sub_lines:
+    draw.text((64, sy), line, font=font_sub, fill=(205, 218, 210, 255))
+    sy += 28
+
+# Sparkle helper
+def draw_sparkle(ctx, cx, cy, r_outer, r_inner, color):
     pts = [
         (cx, cy - r_outer),
         (cx + r_inner, cy - r_inner),
@@ -43,138 +98,31 @@ def draw_sparkle(draw_ctx, cx, cy, r_outer, r_inner, color):
         (cx - r_outer, cy),
         (cx - r_inner, cy - r_inner),
     ]
-    draw_ctx.polygon(pts, fill=color)
+    ctx.polygon(pts, fill=color)
 
-# Outer delicate frame
-inset = 34
-draw.rounded_rectangle(
-    (inset, inset, W - inset, H - inset),
-    radius=18,
-    outline=(220, 231, 155, 55),
-    width=1
-)
+# Corner stars
+for (cx, cy) in [(44, 44), (W - 44, 44), (44, H - 44), (W - 44, H - 44)]:
+    draw_sparkle(draw, cx, cy, 6, 2, (220, 231, 155, 140))
 
-# Corner 4-point stars
-for (cx, cy) in [
-    (inset + 18, inset + 18),
-    (W - inset - 18, inset + 18),
-    (inset + 18, H - inset - 18),
-    (W - inset - 18, H - inset - 18)
-]:
-    draw_sparkle(draw, cx, cy, 7, 2, (220, 231, 155, 140))
-
-# Fonts
-font_logo = ImageFont.truetype("/System/Library/Fonts/Supplemental/Georgia Bold.ttf", 36)
-font_badge = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 13)
-font_eyebrow = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 13)
-font_title = ImageFont.truetype("/System/Library/Fonts/Supplemental/Georgia.ttf", 62)
-font_title_italic = ImageFont.truetype("/System/Library/Fonts/Supplemental/Georgia Italic.ttf", 62)
-font_sub = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 20)
-font_pill = ImageFont.truetype("/System/Library/Fonts/HelveticaNeue.ttc", 14)
-font_footer = ImageFont.truetype("/System/Library/Fonts/Supplemental/Georgia Italic.ttf", 15)
-
-# 1. Top Bar: Brand & Badges
-# Brand text: "whatchu reading."
-draw.text((76, 68), "whatchu", font=font_logo, fill=(250, 247, 242, 255))
-w_w = draw.textlength("whatchu", font=font_logo)
-draw.text((76 + w_w + 8, 68), "reading", font=font_logo, fill=(250, 247, 242, 255))
-w_r = draw.textlength("reading", font=font_logo)
-draw.text((76 + w_w + 8 + w_r, 68), ".", font=font_logo, fill=(220, 231, 155, 255))
-
-# Top-right pill badge: "OPEN SOURCE · NO ADS · NO AMAZON"
-badge_text = "OPEN SOURCE  ·  NO ADS  ·  NO AMAZON"
-bw = draw.textlength(badge_text, font=font_badge)
-bx = W - 76 - bw - 32
-by = 70
-draw.rounded_rectangle(
-    (bx, by, W - 76, by + 34),
-    radius=17,
-    fill=(28, 56, 47, 220),
-    outline=(220, 231, 155, 80),
-    width=1
-)
-draw.text((bx + 16, by + 9), badge_text, font=font_badge, fill=(220, 231, 155, 255))
-
-# 2. Main Content
-# Eyebrow
-eyebrow_text = "A LITTLE LESS SCROLLING. A LITTLE MORE READING."
-draw.text((76, 172), eyebrow_text, font=font_eyebrow, fill=(220, 231, 155, 220))
-
-# Headline: "Find your next chapter."
-draw.text((76, 206), "Find your next ", font=font_title, fill=(252, 250, 247, 255))
-w_find = draw.textlength("Find your next ", font=font_title)
-draw.text((76 + w_find, 206), "chapter.", font=font_title_italic, fill=(220, 231, 155, 255))
-
-# Line 2 of Headline: "Own your reading life."
-draw.text((76, 280), "Own your reading life.", font=font_title, fill=(252, 250, 247, 255))
-
-# Subtitle / description lines
-sub_lines = [
-    "A calm, reader-first alternative to Goodreads. Track shelves, read research",
-    "papers, share thoughts with friends, and discover your next great read",
-    "— powered by Open Library data and zero algorithmic noise."
-]
-sy = 368
-for line in sub_lines:
-    draw.text((76, sy), line, font=font_sub, fill=(196, 212, 202, 255))
-    sy += 29
-
-# 3. Right side: Artwork / Recolored light logo
-try:
-    raw_logo = Image.open("public/logo.png").convert("RGBA")
-    datas = raw_logo.getdata()
-    new_data = []
-    for r, g, b, a in datas:
-        if a < 8:
-            new_data.append((0, 0, 0, 0))
-        elif r > 150: # The chartreuse sparkle
-            new_data.append((220, 231, 155, a)) # #dce79b
-        else: # The book pages - soft warm ivory
-            new_data.append((248, 244, 236, int(a * 0.95)))
-    
-    light_logo = Image.new("RGBA", raw_logo.size)
-    light_logo.putdata(new_data)
-    
-    logo_sz = 270
-    light_logo = light_logo.resize((logo_sz, logo_sz), Image.Resampling.LANCZOS)
-    
-    base.paste(light_logo, (850, 180), light_logo)
-except Exception as e:
-    print("Could not load logo:", e)
-
-# 4. Feature Pills across the bottom
+# Bottom Pills
 pills = [
-    ("Open Library Catalog", 12),
-    ("Monthly Edge Sync", 10),
-    ("Research Papers Radar", 12),
-    ("100% Free & Open Source", 14)
+    "Open Library Catalog",
+    "Monthly Edge Sync",
+    "Research Papers Radar",
+    "100% Free & Open Source"
 ]
+px = 64
+py = 464
+pill_h = 38
+for label in pills:
+    pw = draw.textlength(label, font=font_pill) + 48
+    draw.rounded_rectangle((px, py, px + pw, py + pill_h), radius=9, fill=(24, 46, 38, 235), outline=(58, 102, 88, 210), width=1)
+    draw_sparkle(draw, px + 18, py + 19, 4, 2, (220, 231, 155, 230))
+    draw.text((px + 30, py + 11), label, font=font_pill, fill=(244, 247, 245, 255))
+    px += pw + 10
 
-px = 76
-py = 492
-pill_height = 40
+# Bottom URL
+draw.text((64, 552), "whatchureading.com  ·  MIT Licensed  ·  Powered by Cloudflare Workers, D1 & R2", font=font_badge, fill=(185, 205, 195, 200))
 
-for label, sparkle_size in pills:
-    pw = draw.textlength(label, font=font_pill) + 52
-    draw.rounded_rectangle(
-        (px, py, px + pw, py + pill_height),
-        radius=10,
-        fill=(30, 58, 49, 235),
-        outline=(58, 102, 88, 190),
-        width=1
-    )
-    # Draw tiny sparkle star before label
-    draw_sparkle(draw, px + 20, py + 20, 5, 2, (220, 231, 155, 240))
-    draw.text((px + 34, py + 11), label, font=font_pill, fill=(244, 247, 245, 255))
-    px += pw + 12
-
-# 5. Footer subtle signature
-draw_sparkle(draw, 84, 572, 5, 2, (220, 231, 155, 180))
-draw.text((96, 563), "whatchureading.com", font=font_footer, fill=(220, 231, 155, 200))
-
-footer_right = "MIT Licensed  ·  Powered by Cloudflare Workers, D1 & R2"
-fr_w = draw.textlength(footer_right, font=font_footer)
-draw.text((W - 76 - fr_w, 563), footer_right, font=font_footer, fill=(162, 188, 175, 190))
-
-base.convert("RGB").save("public/og.png", "PNG", optimize=True)
-print("Updated public/og.png generated successfully!")
+composite.convert("RGB").save("public/og.png", "PNG", optimize=True)
+print("Updated public/og.png")

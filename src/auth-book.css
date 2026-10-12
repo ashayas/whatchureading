@@ -39,6 +39,12 @@
   align-self: flex-start;
   margin-top: 9px;
 }
+.auth-brand > span.brand-dot {
+  font-size: inherit;
+  color: #8c9e38;
+  align-self: auto;
+  margin-top: 0;
+}
 .auth-promise {
   position: absolute;
   top: 29px;

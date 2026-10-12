@@ -2136,9 +2136,45 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
               <button
                 type="button"
                 className="footer-link-btn"
-                onClick={() => navigate("about")}
+                onClick={() => {
+                  location.hash = "about";
+                  navigate("about");
+                }}
               >
-                About &amp; Attribution
+                About
+              </button>
+              <span className="footer-dot">·</span>
+              <button
+                type="button"
+                className="footer-link-btn"
+                onClick={() => {
+                  location.hash = "privacy";
+                  navigate("about");
+                }}
+              >
+                Privacy
+              </button>
+              <span className="footer-dot">·</span>
+              <button
+                type="button"
+                className="footer-link-btn"
+                onClick={() => {
+                  location.hash = "terms";
+                  navigate("about");
+                }}
+              >
+                Terms &amp; EULA
+              </button>
+              <span className="footer-dot">·</span>
+              <button
+                type="button"
+                className="footer-link-btn"
+                onClick={() => {
+                  location.hash = "support";
+                  navigate("about");
+                }}
+              >
+                Support
               </button>
               <span className="footer-dot">·</span>
               <a

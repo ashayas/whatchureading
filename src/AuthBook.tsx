@@ -58,7 +58,7 @@ function BookFrame({
     <main className={`auth-scene ${leaving ? "auth-leaving" : ""}`}>
       <a href="/" className="auth-brand">
         <img src="/logo.png" alt="" />
-        whatchureading<span>®</span>
+        whatchureading<span className="brand-dot">.</span>
       </a>
       <a
         href="#about"
@@ -139,7 +139,37 @@ function BookFrame({
               location.hash = "about";
             }}
           >
-            About &amp; Attribution
+            About
+          </a>{" "}
+          ·{" "}
+          <a
+            href="#privacy"
+            onClick={(e) => {
+              e.preventDefault();
+              location.hash = "privacy";
+            }}
+          >
+            Privacy
+          </a>{" "}
+          ·{" "}
+          <a
+            href="#terms"
+            onClick={(e) => {
+              e.preventDefault();
+              location.hash = "terms";
+            }}
+          >
+            Terms &amp; EULA
+          </a>{" "}
+          ·{" "}
+          <a
+            href="#support"
+            onClick={(e) => {
+              e.preventDefault();
+              location.hash = "support";
+            }}
+          >
+            Support
           </a>{" "}
           · made by{" "}
           <a href="https://x.com/ashaya" target="_blank" rel="noreferrer">
@@ -168,16 +198,16 @@ export function AuthRoot({
   );
   const [leaving, setLeaving] = useState(false);
   const [retry, setRetry] = useState(0);
-  const [showAbout, setShowAbout] = useState(
-    () =>
-      typeof location !== "undefined" &&
-      (location.hash === "#about" || location.pathname === "/about"),
-  );
+  const isLegalOrAbout = () => {
+    if (typeof location === "undefined") return false;
+    const paths = ["/about", "/privacy", "/terms", "/eula", "/support"];
+    const hashes = ["#about", "#privacy", "#terms", "#eula", "#support"];
+    return paths.includes(location.pathname) || hashes.includes(location.hash);
+  };
+  const [showAbout, setShowAbout] = useState(isLegalOrAbout);
   useEffect(() => {
     const syncAbout = () => {
-      setShowAbout(
-        location.hash === "#about" || location.pathname === "/about",
-      );
+      setShowAbout(isLegalOrAbout());
     };
     window.addEventListener("hashchange", syncAbout);
     window.addEventListener("popstate", syncAbout);
