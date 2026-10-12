@@ -69,12 +69,16 @@ function startDevServer(args, port) {
     });
     const deadline = Date.now() + 30000;
     const poll = () => {
-      const probe = http.get({ host: "127.0.0.1", port, path: "/", timeout: 1000 }, (res) => {
-        res.destroy();
-        resolve(child);
-      });
+      const probe = http.get(
+        { host: "127.0.0.1", port, path: "/", timeout: 1000 },
+        (res) => {
+          res.destroy();
+          resolve(child);
+        },
+      );
       probe.on("error", () => {
-        if (Date.now() > deadline) return reject(new Error(`Timed out waiting for port ${port}`));
+        if (Date.now() > deadline)
+          return reject(new Error(`Timed out waiting for port ${port}`));
         setTimeout(poll, 300);
       });
     };
@@ -89,7 +93,13 @@ function startProxy() {
   const server = http.createServer((req, res) => {
     const target = req.url?.startsWith("/mcp") ? mcpPort : appPort;
     const upstream = http.request(
-      { host: "127.0.0.1", port: target, path: req.url, method: req.method, headers: req.headers },
+      {
+        host: "127.0.0.1",
+        port: target,
+        path: req.url,
+        method: req.method,
+        headers: req.headers,
+      },
       (upstreamRes) => {
         res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
         upstreamRes.pipe(res);

@@ -6,7 +6,7 @@ const files = execFileSync("git", ["ls-files", "--cached", "-z"])
   .split("\0")
   .filter(Boolean);
 const forbiddenPath =
-  /(^|\/)(?:\.env(?:\..*)?|\.dev\.vars(?:\..*)?|wrangler\.jsonc|worker-configuration\.d\.ts|AGENTS\.md|__pycache__)(?:\/|$)|^(?:artifacts|data|imports|captures|uploads|\.agent-grid|\.wrangler|dist|build|target|node_modules)\/|\.(?:sqlite.*|db(?:-.*)?|dump|csv|tsv|har|mov|mp4|pem|key|pyc)$/i;
+  /(^|\/)(?:\.env(?:\..*)?|\.dev\.vars(?:\..*)?|wrangler\.jsonc|worker-configuration\.d\.ts|AGENTS\.md|__pycache__|mobile-app)(?:\/|$)|^(?:artifacts|data|imports|captures|uploads|\.agent-grid|\.wrangler|dist|build|target|node_modules|mobile-app)\/|\.(?:sqlite.*|db(?:-.*)?|dump|csv|tsv|har|mov|mp4|pem|key|pyc)$/i;
 // Placeholder hostnames used in docs/examples, never a real project ref.
 const supabasePlaceholders = /^(?:your|example|my)-?project$/i;
 const patterns = [

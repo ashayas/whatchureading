@@ -126,9 +126,7 @@ export function PdfReader({
           (entries) => {
             for (const entry of entries) {
               if (entry.isIntersecting) {
-                const n = Number(
-                  (entry.target as HTMLElement).dataset.page,
-                );
+                const n = Number((entry.target as HTMLElement).dataset.page);
                 renderPage(n);
               }
             }

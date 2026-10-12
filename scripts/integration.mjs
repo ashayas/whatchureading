@@ -201,13 +201,18 @@ try {
     ],
     { stdio: "pipe" },
   );
-  let r = await req("uploads", "POST", {
-    title: "My Uploaded Paper",
-    author: "Test Author",
-    kind: "paper",
-    pages: 3,
-    topic: "Physics & Math",
-  }, owner.token);
+  let r = await req(
+    "uploads",
+    "POST",
+    {
+      title: "My Uploaded Paper",
+      author: "Test Author",
+      kind: "paper",
+      pages: 3,
+      topic: "Physics & Math",
+    },
+    owner.token,
+  );
   assert.equal(r.status, 201);
   const bookId = r.data.id;
   const pdfBytes = Buffer.concat([
@@ -237,44 +242,77 @@ try {
   assert.equal(forbidden.status, 404);
   // Personal uploads never leak into another reader's shared catalog/discovery.
   r = await req("bootstrap", "GET", undefined, stranger.token);
-  assert.equal(r.data.books.some((b) => b.id === bookId), false);
-  assert.equal(r.data.recommendations.some((b) => b.id === bookId), false);
+  assert.equal(
+    r.data.books.some((b) => b.id === bookId),
+    false,
+  );
+  assert.equal(
+    r.data.recommendations.some((b) => b.id === bookId),
+    false,
+  );
   r = await req("bootstrap", "GET", undefined, owner.token);
-  assert.equal(r.data.books.some((b) => b.id === bookId), true);
+  assert.equal(
+    r.data.books.some((b) => b.id === bookId),
+    true,
+  );
   r = await req("uploads/mine", "GET", undefined, owner.token);
-  assert.equal(r.data.books.some((b) => b.id === bookId), true);
+  assert.equal(
+    r.data.books.some((b) => b.id === bookId),
+    true,
+  );
   assert.equal(
     r.data.books.find((b) => b.id === bookId).topic,
     "Physics & Math",
   );
   // A paper upload without a valid topic is rejected.
-  r = await req("uploads", "POST", {
-    title: "Missing Topic",
-    author: "Test Author",
-    kind: "paper",
-    pages: 2,
-  }, owner.token);
+  r = await req(
+    "uploads",
+    "POST",
+    {
+      title: "Missing Topic",
+      author: "Test Author",
+      kind: "paper",
+      pages: 2,
+    },
+    owner.token,
+  );
   assert.equal(r.status, 400);
   // Finishing a paper feeds the paper-specific academic radar, not the book one.
-  r = await req("library", "PUT", { book_id: bookId, status: "read", page: 3 }, owner.token);
+  r = await req(
+    "library",
+    "PUT",
+    { book_id: bookId, status: "read", page: 3 },
+    owner.token,
+  );
   assert.equal(r.status, 200);
   r = await req("bootstrap", "GET", undefined, owner.token);
   assert.equal(
-    r.data.paper_attributes.find((a) => a.label === "Physics & Math").value > 15,
+    r.data.paper_attributes.find((a) => a.label === "Physics & Math").value >
+      15,
     true,
   );
   // Public vs. private notes.
   r = await req(
     "notes",
     "POST",
-    { book_id: bookId, page: 1, body: "A public thought", visibility: "public" },
+    {
+      book_id: bookId,
+      page: 1,
+      body: "A public thought",
+      visibility: "public",
+    },
     owner.token,
   );
   assert.equal(r.status, 201);
   r = await req(
     "notes",
     "POST",
-    { book_id: bookId, page: 2, body: "A private thought", visibility: "private" },
+    {
+      book_id: bookId,
+      page: 2,
+      body: "A private thought",
+      visibility: "private",
+    },
     owner.token,
   );
   assert.equal(r.status, 201);
@@ -287,10 +325,21 @@ try {
     r.data.notes.find((n) => n.body === "A private thought").visibility,
     "private",
   );
-  r = await req(`friends/${ownerBoot.data.reader_id}`, "GET", undefined, friend.token);
+  r = await req(
+    `friends/${ownerBoot.data.reader_id}`,
+    "GET",
+    undefined,
+    friend.token,
+  );
   assert.equal(r.status, 200);
-  assert.equal(r.data.notes.some((n) => n.body === "A public thought"), true);
-  assert.equal(r.data.notes.some((n) => n.body === "A private thought"), false);
+  assert.equal(
+    r.data.notes.some((n) => n.body === "A public thought"),
+    true,
+  );
+  assert.equal(
+    r.data.notes.some((n) => n.body === "A private thought"),
+    false,
+  );
   console.log(
     "PASS: PDF upload content round-trip, cross-account upload isolation, and public/private note visibility.",
   );
@@ -304,17 +353,29 @@ try {
   async function req(path, method, body, token) {
     const r = await fetch(base + "/api/v1/" + path, {
       method,
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
       body: body ? JSON.stringify(body) : undefined,
     });
     return { status: r.status, data: await r.json() };
   }
   const memberUsername = `member_${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`;
-  assert.equal((await req("username", "PUT", { username: memberUsername }, member.token)).status, 200);
+  assert.equal(
+    (await req("username", "PUT", { username: memberUsername }, member.token))
+      .status,
+    200,
+  );
   const memberBoot = await req("bootstrap", "GET", undefined, member.token);
   const memberReaderId = memberBoot.data.reader_id;
 
-  let r = await req("groups", "POST", { name: "Book Club", description: "Monthly picks" }, owner.token);
+  let r = await req(
+    "groups",
+    "POST",
+    { name: "Book Club", description: "Monthly picks" },
+    owner.token,
+  );
   assert.equal(r.status, 201);
   const groupId = r.data.id;
 
@@ -328,55 +389,118 @@ try {
   assert.equal(r.data.current_pick, null);
 
   // A non-member can't even tell the group exists via this route.
-  r = await req(`groups/${groupId}/members`, "POST", { username: memberUsername }, outsider.token);
+  r = await req(
+    `groups/${groupId}/members`,
+    "POST",
+    { username: memberUsername },
+    outsider.token,
+  );
   assert.equal(r.status, 404);
-  r = await req(`groups/${groupId}/members`, "POST", { username: memberUsername }, owner.token);
+  r = await req(
+    `groups/${groupId}/members`,
+    "POST",
+    { username: memberUsername },
+    owner.token,
+  );
   assert.equal(r.status, 200);
   r = await req(`groups/${groupId}`, "GET", undefined, member.token);
   assert.equal(r.status, 200);
   assert.equal(r.data.members.length, 2);
 
   // A member (now that they're one) still isn't the owner.
-  r = await req(`groups/${groupId}/members`, "POST", { username: "someoneelse" }, member.token);
+  r = await req(
+    `groups/${groupId}/members`,
+    "POST",
+    { username: "someoneelse" },
+    member.token,
+  );
   assert.equal(r.status, 403);
 
   // A non-owner cannot set the pick; posting an opinion before a pick exists fails.
-  r = await req(`groups/${groupId}/pick`, "POST", { book_id: "midnight" }, member.token);
+  r = await req(
+    `groups/${groupId}/pick`,
+    "POST",
+    { book_id: "midnight" },
+    member.token,
+  );
   assert.equal(r.status, 403);
-  r = await req(`groups/${groupId}/comments`, "POST", { body: "early opinion" }, member.token);
+  r = await req(
+    `groups/${groupId}/comments`,
+    "POST",
+    { body: "early opinion" },
+    member.token,
+  );
   assert.equal(r.status, 400);
-  r = await req(`groups/${groupId}/pick`, "POST", { book_id: "midnight" }, owner.token);
+  r = await req(
+    `groups/${groupId}/pick`,
+    "POST",
+    { book_id: "midnight" },
+    owner.token,
+  );
   assert.equal(r.status, 201);
 
   // The member's reading progress on the pick shows up in the group view.
-  assert.equal((await req("library", "PUT", { book_id: "midnight", status: "reading", page: 42 }, member.token)).status, 200);
+  assert.equal(
+    (
+      await req(
+        "library",
+        "PUT",
+        { book_id: "midnight", status: "reading", page: 42 },
+        member.token,
+      )
+    ).status,
+    200,
+  );
   r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
   assert.equal(r.status, 200);
   assert.equal(r.data.current_pick.book_id, "midnight");
   assert.equal(r.data.progress.find((p) => p.status === "reading")?.page, 42);
 
   // Opinions attach to the current pick and are visible to the whole group.
-  r = await req(`groups/${groupId}/comments`, "POST", { body: "Loving it so far" }, member.token);
+  r = await req(
+    `groups/${groupId}/comments`,
+    "POST",
+    { body: "Loving it so far" },
+    member.token,
+  );
   assert.equal(r.status, 201);
   r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
-  assert.equal(r.data.comments.some((c) => c.body === "Loving it so far"), true);
+  assert.equal(
+    r.data.comments.some((c) => c.body === "Loving it so far"),
+    true,
+  );
 
   // Picking a new book closes out the old pick into history.
-  r = await req(`groups/${groupId}/pick`, "POST", { book_id: "crawdads" }, owner.token);
+  r = await req(
+    `groups/${groupId}/pick`,
+    "POST",
+    { book_id: "crawdads" },
+    owner.token,
+  );
   assert.equal(r.status, 201);
   r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
   assert.equal(r.data.current_pick.book_id, "crawdads");
-  assert.equal(r.data.past_picks.some((p) => p.book_id === "midnight"), true);
+  assert.equal(
+    r.data.past_picks.some((p) => p.book_id === "midnight"),
+    true,
+  );
 
   // A member can leave; the owner can remove members; a non-owner cannot remove others.
-  r = await req(`groups/${groupId}/members`, "DELETE", { reader_id: memberReaderId }, outsider.token);
+  r = await req(
+    `groups/${groupId}/members`,
+    "DELETE",
+    { reader_id: memberReaderId },
+    outsider.token,
+  );
   assert.equal(r.status, 403);
   r = await req(`groups/${groupId}/members`, "DELETE", {}, member.token);
   assert.equal(r.status, 200);
   r = await req(`groups/${groupId}`, "GET", undefined, owner.token);
   assert.equal(r.data.members.length, 1);
 
-  console.log("PASS: groups — membership, owner-only picks, progress visibility, opinions, and pick history.");
+  console.log(
+    "PASS: groups — membership, owner-only picks, progress visibility, opinions, and pick history.",
+  );
 } finally {
   await cleanupTestUsers();
 }

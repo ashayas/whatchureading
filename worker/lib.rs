@@ -242,6 +242,20 @@ async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
         return Err(Error::RustError("Reader creation failed".into()));
     };
     let id = text(&reader, "id").to_string();
+    // Cloudflare's native per-key rate limiter, keyed by D1 reader id (not IP,
+    // which is shared/rotating behind NAT and mobile carriers): caps abuse
+    // from a single account without needing a KV/D1-backed counter of our own.
+    if !env
+        .rate_limiter("API_RATE_LIMITER")?
+        .limit(id.clone())
+        .await?
+        .success
+    {
+        return reply(
+            json!({"error":"You're doing that too much. Please slow down and try again shortly."}),
+            429,
+        );
+    }
     // New readers start out friends with the synthetic Shakespeare account,
     // so the feed and friends list are never empty on day one.
     if is_new {
@@ -1088,6 +1102,52 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         return bad("Book not found");
     };
     let pages = int(&book, "pages");
+    if path == "/api/v1/account" && method == Method::Delete {
+        // Full self-service erase of everything this app itself stores for the
+        // reader (D1 rows + R2 objects). Deliberately does not touch the
+        // Supabase auth identity: the Worker never holds a privileged Supabase
+        // key (see AGENTS.md), so the login record is left behind -- the
+        // reader simply gets a fresh, empty account if they sign back in with
+        // the same email. Other readers' shared content that references this
+        // reader (group picks/comments they made, uploaded books/papers) is
+        // left in place rather than cascaded, matching how the app already
+        // tolerates orphaned references elsewhere.
+        let owned = db
+            .prepare("SELECT avatar_key, (SELECT GROUP_CONCAT(content_key) FROM books WHERE uploader_reader_id=readers.id AND content_key IS NOT NULL) AS upload_keys FROM readers WHERE id=?")
+            .bind(&[arg(id)])?
+            .first::<Value>(None)
+            .await?;
+        let mut object_keys: Vec<String> = Vec::new();
+        if let Some(owned) = &owned {
+            if let Some(avatar_key) = owned.get("avatar_key").and_then(Value::as_str) {
+                object_keys.push(avatar_key.to_string());
+            }
+            if let Some(upload_keys) = owned.get("upload_keys").and_then(Value::as_str) {
+                object_keys.extend(upload_keys.split(',').map(str::to_string));
+            }
+        }
+        db.batch(vec![
+            db.prepare("DELETE FROM library WHERE reader_id=?").bind(&[arg(id)])?,
+            db.prepare("DELETE FROM notes WHERE reader_id=?").bind(&[arg(id)])?,
+            db.prepare("DELETE FROM swipes WHERE reader_id=?").bind(&[arg(id)])?,
+            db.prepare("DELETE FROM likes WHERE reader_id=?").bind(&[arg(id)])?,
+            db.prepare("DELETE FROM reader_friends WHERE reader_id=? OR friend_id=?").bind(&[arg(id), arg(id)])?,
+            db.prepare("DELETE FROM goodreads_browser_sessions WHERE reader_id=?").bind(&[arg(id)])?,
+            db.prepare("DELETE FROM group_members WHERE reader_id=?").bind(&[arg(id)])?,
+            db.prepare("DELETE FROM books WHERE uploader_reader_id=?").bind(&[arg(id)])?,
+            db.prepare("DELETE FROM readers WHERE id=?").bind(&[arg(id)])?,
+        ])
+        .await?;
+        if !object_keys.is_empty() {
+            if let Ok(bucket) = env.bucket("UPLOADS") {
+                // Best-effort: the account's D1 data is already gone, which is
+                // what actually matters for "delete my account"; an orphaned
+                // R2 object afterward is a storage leak, not a privacy issue.
+                let _ = bucket.delete_multiple(object_keys).await;
+            }
+        }
+        return reply(json!({"ok":true}), 200);
+    }
     if path == "/api/v1/library" && method == Method::Delete {
         db.batch(vec![
             // Removing a ranked book leaves a gap in the reader's ranking; close it.

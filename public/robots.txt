@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Allow: /about
+Disallow: /api/
+
+Sitemap: https://whatchureading.com/sitemap.xml

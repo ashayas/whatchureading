@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { authClient, callbackUrl } from "./auth";
 import { api, type Bootstrap } from "./types";
+import { AboutPage } from "./AboutPage";
 import "./auth-book.css";
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -59,10 +60,18 @@ function BookFrame({
         <img src="/logo.png" alt="" />
         whatchureading<span>®</span>
       </a>
-      <div className="auth-promise" aria-label="About whatchureading">
+      <a
+        href="#about"
+        className="auth-promise"
+        aria-label="About whatchureading and open data"
+        onClick={(e) => {
+          e.preventDefault();
+          location.hash = "about";
+        }}
+      >
         <strong>Free. Open-source. Own your own chapter.</strong>
-        <span>No Amazon. No ads.</span>
-      </div>
+        <span>No Amazon. No ads. Learn more →</span>
+      </a>
       <div className={`auth-book ${loading ? "is-fluttering" : ""}`}>
         <div className="auth-back-cover" />
         <section className="auth-left-page" aria-label="Welcome">
@@ -123,7 +132,16 @@ function BookFrame({
       <footer className="auth-footer">
         <span>A home for your reading life.</span>
         <span>
-          made by{" "}
+          <a
+            href="#about"
+            onClick={(e) => {
+              e.preventDefault();
+              location.hash = "about";
+            }}
+          >
+            About &amp; Attribution
+          </a>{" "}
+          · made by{" "}
           <a href="https://x.com/ashaya" target="_blank" rel="noreferrer">
             @ashaya
           </a>
@@ -150,6 +168,24 @@ export function AuthRoot({
   );
   const [leaving, setLeaving] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [showAbout, setShowAbout] = useState(
+    () =>
+      typeof location !== "undefined" &&
+      (location.hash === "#about" || location.pathname === "/about"),
+  );
+  useEffect(() => {
+    const syncAbout = () => {
+      setShowAbout(
+        location.hash === "#about" || location.pathname === "/about",
+      );
+    };
+    window.addEventListener("hashchange", syncAbout);
+    window.addEventListener("popstate", syncAbout);
+    return () => {
+      window.removeEventListener("hashchange", syncAbout);
+      window.removeEventListener("popstate", syncAbout);
+    };
+  }, []);
   useEffect(() => {
     let active = true;
     let unsubscribe = () => {};
@@ -267,6 +303,20 @@ export function AuthRoot({
   }, [userId, recovery, initializing, retry, prepareApp]);
   if (data && session && loadedFor === session.user.id && !recovery)
     return children(data);
+  if (showAbout && (!data || !session))
+    return (
+      <AboutPage
+        onBack={() => {
+          setShowAbout(false);
+          if (location.hash === "#about") {
+            history.pushState(null, "", "/");
+          } else if (location.pathname === "/about") {
+            history.pushState(null, "", "/");
+          }
+        }}
+        isAuthenticated={false}
+      />
+    );
   if ((initializing || (session && !recovery)) && !error)
     return <BookLoading leaving={leaving} />;
   if (!client || (session && !recovery))

@@ -375,6 +375,15 @@ button h3 {
   flex-direction: column;
   gap: 3px;
   color: #929887;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.topbar-promise:hover {
+  opacity: 0.82;
 }
 .topbar-promise strong {
   color: #4b6251;
@@ -1063,10 +1072,22 @@ main {
   text-align: left;
   cursor: pointer;
 }
-.friend-profile-link:hover h2 { color: #71865c; }
-.friend-profile-link div span { display: flex; align-items: center; gap: 4px; }
-.friend-card-heading h2 { margin: 0 0 4px; font-size: 17px; }
-.friend-card-heading span { color: var(--muted, #777); font-size: 11px; }
+.friend-profile-link:hover h2 {
+  color: #71865c;
+}
+.friend-profile-link div span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.friend-card-heading h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+.friend-card-heading span {
+  color: var(--muted, #777);
+  font-size: 11px;
+}
 .friend-reading {
   display: flex;
   width: 100%;
@@ -1074,37 +1095,165 @@ main {
   margin-top: 13px;
   text-align: left;
 }
-.friend-reading > .cover { width: 70px; min-width: 70px; height: 104px; }
-.friend-reading > span { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; }
-.friend-reading b { font-size: 13px; line-height: 1.4; }
-.friend-reading small { color: var(--muted, #777); font-size: 10px; }
-.friend-progress { width: 100%; height: 5px; border-radius: 9px; background: #e7e9df; overflow: hidden; margin-top: auto; }
-.friend-progress i { display: block; height: 100%; border-radius: inherit; background: #8d9d70; }
-.friend-empty { margin: 16px 0 4px; color: var(--muted, #777); font-size: 12px; }
-.friend-detail-heading { align-items: center; }
-.friend-detail-heading .text-action { margin-bottom: 17px; }
-.friend-detail-heading > .avatar { width: 62px; height: 62px; font-size: 18px; }
-.friend-detail-columns { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(260px, .8fr); align-items: start; gap: 24px; }
-.friend-detail-columns > section, .friend-thoughts { min-width: 0; }
-.friend-shelves { display: flex; overflow-x: auto; margin: 14px 0; gap: 5px; }
-.friend-shelves button { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
-.friend-shelves small { opacity: .7; }
-.friend-book-list { display: grid; gap: 12px; }
-.friend-book-item { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 15px; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: #fbfcf6; }
-.friend-book-item > .cover { width: 64px; height: 96px; }
-.friend-book-item h3 { margin: 5px 0 2px; font-size: 15px; }
-.friend-book-item p { margin: 4px 0; color: var(--muted, #777); font-size: 11px; }
-.friend-book-item > div > small { display: block; margin: 6px 0; color: var(--muted, #777); font-size: 10px; }
-.friend-timeline { margin: 8px 0; padding-left: 16px; color: #71806a; font-size: 10px; line-height: 1.6; }
-.friend-book-item .stars { margin-top: 5px; }
-.friend-book-item .friend-review, .friend-book-item .friend-comment { margin-top: 12px; padding: 10px; border-radius: 6px; background: #f1f2e9; color: #485347; white-space: pre-wrap; line-height: 1.55; }
-.friend-book-item .friend-comment { margin-top: 6px; background: #f8eee7; }
-.friend-thoughts { padding: 20px; border: 1px solid var(--line); border-radius: 9px; background: #fbfcf6; }
-.friend-thought { padding: 14px 0; border-top: 1px solid var(--line); }
-.friend-thought b, .friend-thought small, .friend-thought time { display: block; }
-.friend-thought b { font-size: 12px; }
-.friend-thought small, .friend-thought time { margin-top: 5px; color: var(--muted, #777); font-size: 10px; }
-.friend-thought p { font-size: 12px; line-height: 1.55; }
+.friend-reading > .cover {
+  width: 70px;
+  min-width: 70px;
+  height: 104px;
+}
+.friend-reading > span {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+.friend-reading b {
+  font-size: 13px;
+  line-height: 1.4;
+}
+.friend-reading small {
+  color: var(--muted, #777);
+  font-size: 10px;
+}
+.friend-progress {
+  width: 100%;
+  height: 5px;
+  border-radius: 9px;
+  background: #e7e9df;
+  overflow: hidden;
+  margin-top: auto;
+}
+.friend-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #8d9d70;
+}
+.friend-empty {
+  margin: 16px 0 4px;
+  color: var(--muted, #777);
+  font-size: 12px;
+}
+.friend-detail-heading {
+  align-items: center;
+}
+.friend-detail-heading .text-action {
+  margin-bottom: 17px;
+}
+.friend-detail-heading > .avatar {
+  width: 62px;
+  height: 62px;
+  font-size: 18px;
+}
+.friend-detail-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(260px, 0.8fr);
+  align-items: start;
+  gap: 24px;
+}
+.friend-detail-columns > section,
+.friend-thoughts {
+  min-width: 0;
+}
+.friend-shelves {
+  display: flex;
+  overflow-x: auto;
+  margin: 14px 0;
+  gap: 5px;
+}
+.friend-shelves button {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.friend-shelves small {
+  opacity: 0.7;
+}
+.friend-book-list {
+  display: grid;
+  gap: 12px;
+}
+.friend-book-item {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 15px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfcf6;
+}
+.friend-book-item > .cover {
+  width: 64px;
+  height: 96px;
+}
+.friend-book-item h3 {
+  margin: 5px 0 2px;
+  font-size: 15px;
+}
+.friend-book-item p {
+  margin: 4px 0;
+  color: var(--muted, #777);
+  font-size: 11px;
+}
+.friend-book-item > div > small {
+  display: block;
+  margin: 6px 0;
+  color: var(--muted, #777);
+  font-size: 10px;
+}
+.friend-timeline {
+  margin: 8px 0;
+  padding-left: 16px;
+  color: #71806a;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.friend-book-item .stars {
+  margin-top: 5px;
+}
+.friend-book-item .friend-review,
+.friend-book-item .friend-comment {
+  margin-top: 12px;
+  padding: 10px;
+  border-radius: 6px;
+  background: #f1f2e9;
+  color: #485347;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+.friend-book-item .friend-comment {
+  margin-top: 6px;
+  background: #f8eee7;
+}
+.friend-thoughts {
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfcf6;
+}
+.friend-thought {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.friend-thought b,
+.friend-thought small,
+.friend-thought time {
+  display: block;
+}
+.friend-thought b {
+  font-size: 12px;
+}
+.friend-thought small,
+.friend-thought time {
+  margin-top: 5px;
+  color: var(--muted, #777);
+  font-size: 10px;
+}
+.friend-thought p {
+  font-size: 12px;
+  line-height: 1.55;
+}
 .friend-row {
   display: flex;
   align-items: center;
@@ -1179,11 +1328,44 @@ footer > span:last-child {
   gap: 5px;
   align-items: center;
 }
-footer a {
+footer a,
+.footer-link-btn {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   color: #82976c;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+footer a:hover,
+.footer-link-btn:hover {
+  color: #203e35;
+}
+.sidebar-about-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+  border: 1px solid #dfe5d6;
+  background: #fdfefc;
+  color: #4f6154;
+  font-size: 11px;
+  font-weight: 550;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.sidebar-about-btn:hover,
+.sidebar-about-btn.active {
+  background: #edf3e7;
+  color: #203e35;
+  border-color: #c7d2bf;
 }
 .footer-dot {
   margin: 0 6px;
@@ -1213,6 +1395,41 @@ footer a {
 }
 .outline:hover {
   background: #edf1e2;
+}
+.danger-zone {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid #ece6dd;
+}
+.danger-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #a4453a;
+}
+.danger-warning {
+  font-size: 12px;
+  color: #7a4a3a;
+  margin: 0 0 10px;
+}
+.danger-actions {
+  display: flex;
+  gap: 10px;
+}
+.danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 16px;
+  font-size: 11px;
+  font-weight: 550;
+  border-radius: 5px;
+  background: #a4453a;
+  color: #fbf3ef;
+}
+.danger:hover {
+  background: #8a392f;
 }
 .mobile-nav {
   display: none;
@@ -1582,7 +1799,9 @@ select {
   font-size: 0.82rem;
   line-height: 1.45;
 }
-.shelf-comments small { color: var(--muted, #777); }
+.shelf-comments small {
+  color: var(--muted, #777);
+}
 .reading-card .dnf-action {
   display: block;
   margin-top: 8px;
@@ -1841,50 +2060,276 @@ select {
 .page-heading > .primary,
 .page-heading > .outline,
 .page-heading-actions > .primary,
-.page-heading-actions > .outline { white-space: nowrap; }
+.page-heading-actions > .outline {
+  white-space: nowrap;
+}
 .page-heading-actions {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
 }
-.import-lede { max-width: 520px; }
-.goodreads-steps { display: grid; gap: 10px; margin: 24px 0 18px; }
-.goodreads-step { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcf6; }
-.goodreads-step > span { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--green); color: white; font-weight: 700; }
-.goodreads-step b, .goodreads-step small { display: block; }
-.goodreads-step small { margin-top: 3px; color: var(--muted); }
-.goodreads-dropzone { display: grid; justify-items: center; gap: 5px; padding: 24px; border: 1.5px dashed #9eaa8c; border-radius: 12px; background: #f7f8ef; color: var(--green); text-align: center; cursor: pointer; }
-.goodreads-dropzone span { color: var(--muted); font-size: 12px; }
-.goodreads-dropzone input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.file-drop { display: grid; justify-items: center; gap: 5px; padding: 24px; margin-top: 14px; border: 1.5px dashed #9eaa8c; border-radius: 12px; background: #f7f8ef; color: var(--green); text-align: center; cursor: pointer; }
-.file-drop b { display: block; }
-.file-drop span { display: block; color: var(--muted); font-size: 12px; }
-.file-drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.import-preview { display: flex; justify-content: space-between; gap: 14px; margin-top: 14px; padding: 13px 15px; border-radius: 8px; background: #edf2e4; color: var(--green); }
-.import-preview span { color: var(--muted); text-align: right; }
-.import-error { color: #a9493d !important; }
-.import-bridge-status { display: flex; align-items: center; gap: 7px; padding: 9px 12px; margin: 12px 0 0; border-radius: 7px; background: #f1f3e8; color: var(--green) !important; font-size: 12px !important; }
-.goodreads-import-animation { display: flex; align-items: center; gap: 18px; min-height: 112px; margin: 14px 0 2px; padding: 12px 18px; border-radius: 12px; background: linear-gradient(110deg, #edf2e4, #f8f6eb 55%, #e9f0e1); overflow: hidden; }
-.goodreads-import-animation > div:last-child { display: grid; gap: 4px; }
-.goodreads-import-animation > div:last-child b { color: var(--green); font-size: 14px; }
-.goodreads-import-animation > div:last-child span { max-width: 390px; color: var(--muted); font-size: 11px; }
-.goodreads-browser-view { display: grid; gap: 6px; margin: 14px 0 2px; }
-.goodreads-browser-view iframe { display: block; width: 100%; height: 300px; border: 1px solid #d6dfcc; border-radius: 12px; background: #eef2e9; }
-.goodreads-browser-view a { justify-self: end; display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-size: 11px; }
-.import-books { position: relative; width: 138px; height: 88px; flex: 0 0 138px; perspective: 700px; }
-.import-book { position: absolute; top: 8px; left: 36px; display: grid; align-content: center; gap: 2px; width: 58px; height: 76px; padding: 8px; border-radius: 3px 7px 7px 3px; color: #315044; box-shadow: 4px 7px 12px #31504422; transform-origin: left center; animation: import-book-flip 2.4s ease-in-out infinite; }
-.import-book span, .import-book b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 7px; line-height: 1.1; }
-.import-book b { font-family: Georgia, serif; font-size: 10px; }
-.import-book i { display: block; width: 25px; height: 2px; margin-top: 4px; border-radius: 2px; background: #31504466; }
-@keyframes import-book-flip { 0%, 16% { opacity: 0; transform: translateX(26px) rotateY(-90deg) rotateZ(4deg); } 28%, 66% { opacity: 1; transform: translateX(0) rotateY(0) rotateZ(0); } 82%, 100% { opacity: 0; transform: translateX(-32px) rotateY(88deg) rotateZ(-5deg); } }
-@media (prefers-reduced-motion: reduce) { .import-book { animation: none; opacity: 1; transform: none; } .import-book:nth-child(n+2) { display: none; } }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
-.import-complete { display: grid; justify-items: center; text-align: center; padding: 24px 8px 12px; }
-.import-complete p { max-width: 420px; }
-.import-check { display: grid; place-items: center; width: 58px; height: 58px; margin-bottom: 18px; border-radius: 50%; background: #dcebd0; color: var(--green); }
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
+.import-lede {
+  max-width: 520px;
+}
+.goodreads-steps {
+  display: grid;
+  gap: 10px;
+  margin: 24px 0 18px;
+}
+.goodreads-step {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fbfcf6;
+}
+.goodreads-step > span {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--green);
+  color: white;
+  font-weight: 700;
+}
+.goodreads-step b,
+.goodreads-step small {
+  display: block;
+}
+.goodreads-step small {
+  margin-top: 3px;
+  color: var(--muted);
+}
+.goodreads-dropzone {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 24px;
+  border: 1.5px dashed #9eaa8c;
+  border-radius: 12px;
+  background: #f7f8ef;
+  color: var(--green);
+  text-align: center;
+  cursor: pointer;
+}
+.goodreads-dropzone span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.goodreads-dropzone input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.file-drop {
+  display: grid;
+  justify-items: center;
+  gap: 5px;
+  padding: 24px;
+  margin-top: 14px;
+  border: 1.5px dashed #9eaa8c;
+  border-radius: 12px;
+  background: #f7f8ef;
+  color: var(--green);
+  text-align: center;
+  cursor: pointer;
+}
+.file-drop b {
+  display: block;
+}
+.file-drop span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+.file-drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.import-preview {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 13px 15px;
+  border-radius: 8px;
+  background: #edf2e4;
+  color: var(--green);
+}
+.import-preview span {
+  color: var(--muted);
+  text-align: right;
+}
+.import-error {
+  color: #a9493d !important;
+}
+.import-bridge-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  margin: 12px 0 0;
+  border-radius: 7px;
+  background: #f1f3e8;
+  color: var(--green) !important;
+  font-size: 12px !important;
+}
+.goodreads-import-animation {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 112px;
+  margin: 14px 0 2px;
+  padding: 12px 18px;
+  border-radius: 12px;
+  background: linear-gradient(110deg, #edf2e4, #f8f6eb 55%, #e9f0e1);
+  overflow: hidden;
+}
+.goodreads-import-animation > div:last-child {
+  display: grid;
+  gap: 4px;
+}
+.goodreads-import-animation > div:last-child b {
+  color: var(--green);
+  font-size: 14px;
+}
+.goodreads-import-animation > div:last-child span {
+  max-width: 390px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.goodreads-browser-view {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0 2px;
+}
+.goodreads-browser-view iframe {
+  display: block;
+  width: 100%;
+  height: 300px;
+  border: 1px solid #d6dfcc;
+  border-radius: 12px;
+  background: #eef2e9;
+}
+.goodreads-browser-view a {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--green);
+  font-size: 11px;
+}
+.import-books {
+  position: relative;
+  width: 138px;
+  height: 88px;
+  flex: 0 0 138px;
+  perspective: 700px;
+}
+.import-book {
+  position: absolute;
+  top: 8px;
+  left: 36px;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+  width: 58px;
+  height: 76px;
+  padding: 8px;
+  border-radius: 3px 7px 7px 3px;
+  color: #315044;
+  box-shadow: 4px 7px 12px #31504422;
+  transform-origin: left center;
+  animation: import-book-flip 2.4s ease-in-out infinite;
+}
+.import-book span,
+.import-book b {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 7px;
+  line-height: 1.1;
+}
+.import-book b {
+  font-family: Georgia, serif;
+  font-size: 10px;
+}
+.import-book i {
+  display: block;
+  width: 25px;
+  height: 2px;
+  margin-top: 4px;
+  border-radius: 2px;
+  background: #31504466;
+}
+@keyframes import-book-flip {
+  0%,
+  16% {
+    opacity: 0;
+    transform: translateX(26px) rotateY(-90deg) rotateZ(4deg);
+  }
+  28%,
+  66% {
+    opacity: 1;
+    transform: translateX(0) rotateY(0) rotateZ(0);
+  }
+  82%,
+  100% {
+    opacity: 0;
+    transform: translateX(-32px) rotateY(88deg) rotateZ(-5deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .import-book {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .import-book:nth-child(n + 2) {
+    display: none;
+  }
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+}
+.import-complete {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  padding: 24px 8px 12px;
+}
+.import-complete p {
+  max-width: 420px;
+}
+.import-check {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 18px;
+  border-radius: 50%;
+  background: #dcebd0;
+  color: var(--green);
+}
+.spin {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 .modal-close {
   position: absolute;
   top: 14px;
@@ -2659,8 +3104,12 @@ input::placeholder {
   }
 }
 @media (max-width: 980px) {
-  .friend-detail-columns { grid-template-columns: 1fr; }
-  .friend-shelves { max-width: calc(100vw - 48px); }
+  .friend-detail-columns {
+    grid-template-columns: 1fr;
+  }
+  .friend-shelves {
+    max-width: calc(100vw - 48px);
+  }
   .sidebar {
     width: 175px;
     padding: 28px 12px 0;

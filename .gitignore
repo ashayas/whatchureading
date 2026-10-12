@@ -40,3 +40,5 @@ venv/
 *.pem
 *.key
 docs/goodreads-import.md
+mobile-app/
+

@@ -15,42 +15,171 @@ export type PaperTopic = (typeof PAPER_TOPICS)[number];
 // Matched against each page's text as it's read (see PdfReader); only the
 // subtopics for a paper's own topic are checked, to keep extraction cheap
 // and relevant.
-export const PAPER_SUBTOPICS: Record<PaperTopic, { label: string; keywords: string[] }[]> = {
+export const PAPER_SUBTOPICS: Record<
+  PaperTopic,
+  { label: string; keywords: string[] }[]
+> = {
   "Computer Science": [
-    { label: "Machine Learning", keywords: ["machine learning", "neural network", "deep learning", "training", "gradient", "dataset", "model accuracy"] },
-    { label: "Systems", keywords: ["distributed", "latency", "throughput", "kernel", "scheduler", "cache", "database"] },
-    { label: "Security", keywords: ["vulnerability", "exploit", "encryption", "adversarial", "attacker", "privacy"] },
-    { label: "Theory", keywords: ["algorithm", "complexity", "theorem", "proof", "np-hard", "computability"] },
+    {
+      label: "Machine Learning",
+      keywords: [
+        "machine learning",
+        "neural network",
+        "deep learning",
+        "training",
+        "gradient",
+        "dataset",
+        "model accuracy",
+      ],
+    },
+    {
+      label: "Systems",
+      keywords: [
+        "distributed",
+        "latency",
+        "throughput",
+        "kernel",
+        "scheduler",
+        "cache",
+        "database",
+      ],
+    },
+    {
+      label: "Security",
+      keywords: [
+        "vulnerability",
+        "exploit",
+        "encryption",
+        "adversarial",
+        "attacker",
+        "privacy",
+      ],
+    },
+    {
+      label: "Theory",
+      keywords: [
+        "algorithm",
+        "complexity",
+        "theorem",
+        "proof",
+        "np-hard",
+        "computability",
+      ],
+    },
   ],
   "Physics & Math": [
-    { label: "Quantum", keywords: ["quantum", "qubit", "entanglement", "superposition"] },
-    { label: "Cosmology", keywords: ["universe", "galaxy", "cosmology", "dark matter", "relativity"] },
-    { label: "Statistics", keywords: ["probability", "distribution", "variance", "regression", "bayesian"] },
-    { label: "Pure Math", keywords: ["theorem", "lemma", "manifold", "topology", "proof"] },
+    {
+      label: "Quantum",
+      keywords: ["quantum", "qubit", "entanglement", "superposition"],
+    },
+    {
+      label: "Cosmology",
+      keywords: [
+        "universe",
+        "galaxy",
+        "cosmology",
+        "dark matter",
+        "relativity",
+      ],
+    },
+    {
+      label: "Statistics",
+      keywords: [
+        "probability",
+        "distribution",
+        "variance",
+        "regression",
+        "bayesian",
+      ],
+    },
+    {
+      label: "Pure Math",
+      keywords: ["theorem", "lemma", "manifold", "topology", "proof"],
+    },
   ],
   "Life Sciences": [
-    { label: "Genetics", keywords: ["gene", "genome", "dna", "mutation", "crispr", "allele"] },
-    { label: "Neuroscience", keywords: ["neuron", "brain", "cortex", "synapse", "cognition"] },
-    { label: "Ecology", keywords: ["ecosystem", "species", "habitat", "biodiversity", "climate"] },
-    { label: "Medicine", keywords: ["clinical", "patient", "treatment", "trial", "diagnosis"] },
+    {
+      label: "Genetics",
+      keywords: ["gene", "genome", "dna", "mutation", "crispr", "allele"],
+    },
+    {
+      label: "Neuroscience",
+      keywords: ["neuron", "brain", "cortex", "synapse", "cognition"],
+    },
+    {
+      label: "Ecology",
+      keywords: ["ecosystem", "species", "habitat", "biodiversity", "climate"],
+    },
+    {
+      label: "Medicine",
+      keywords: ["clinical", "patient", "treatment", "trial", "diagnosis"],
+    },
   ],
   "Social Sciences": [
-    { label: "Psychology", keywords: ["behavior", "cognitive", "emotion", "personality", "therapy"] },
-    { label: "Sociology", keywords: ["society", "inequality", "culture", "community", "demographic"] },
-    { label: "Political Science", keywords: ["policy", "government", "election", "democracy", "institution"] },
-    { label: "Anthropology", keywords: ["culture", "ritual", "ethnography", "kinship"] },
+    {
+      label: "Psychology",
+      keywords: ["behavior", "cognitive", "emotion", "personality", "therapy"],
+    },
+    {
+      label: "Sociology",
+      keywords: [
+        "society",
+        "inequality",
+        "culture",
+        "community",
+        "demographic",
+      ],
+    },
+    {
+      label: "Political Science",
+      keywords: [
+        "policy",
+        "government",
+        "election",
+        "democracy",
+        "institution",
+      ],
+    },
+    {
+      label: "Anthropology",
+      keywords: ["culture", "ritual", "ethnography", "kinship"],
+    },
   ],
   Economics: [
-    { label: "Macroeconomics", keywords: ["gdp", "inflation", "monetary", "fiscal", "unemployment"] },
-    { label: "Microeconomics", keywords: ["market", "price", "supply", "demand", "incentive"] },
-    { label: "Finance", keywords: ["investment", "asset", "portfolio", "risk", "return"] },
-    { label: "Game Theory", keywords: ["equilibrium", "strategy", "payoff", "auction"] },
+    {
+      label: "Macroeconomics",
+      keywords: ["gdp", "inflation", "monetary", "fiscal", "unemployment"],
+    },
+    {
+      label: "Microeconomics",
+      keywords: ["market", "price", "supply", "demand", "incentive"],
+    },
+    {
+      label: "Finance",
+      keywords: ["investment", "asset", "portfolio", "risk", "return"],
+    },
+    {
+      label: "Game Theory",
+      keywords: ["equilibrium", "strategy", "payoff", "auction"],
+    },
   ],
   Humanities: [
-    { label: "Philosophy", keywords: ["ethics", "metaphysics", "epistemology", "existential"] },
-    { label: "History", keywords: ["century", "empire", "revolution", "war", "archive"] },
-    { label: "Literature", keywords: ["narrative", "poetics", "author", "novel"] },
-    { label: "Linguistics", keywords: ["syntax", "semantics", "phonology", "grammar"] },
+    {
+      label: "Philosophy",
+      keywords: ["ethics", "metaphysics", "epistemology", "existential"],
+    },
+    {
+      label: "History",
+      keywords: ["century", "empire", "revolution", "war", "archive"],
+    },
+    {
+      label: "Literature",
+      keywords: ["narrative", "poetics", "author", "novel"],
+    },
+    {
+      label: "Linguistics",
+      keywords: ["syntax", "semantics", "phonology", "grammar"],
+    },
   ],
 };
 export interface Book {
@@ -121,7 +250,12 @@ export interface FriendNote {
   created_at: string;
 }
 export interface FriendProfile {
-  profile: { id: string; name: string; goal: number; avatar_key: string | null };
+  profile: {
+    id: string;
+    name: string;
+    goal: number;
+    avatar_key: string | null;
+  };
   library: Array<
     LibraryItem & {
       title: string;
@@ -194,7 +328,12 @@ export interface GroupDetail {
 }
 export interface Bootstrap {
   reader_id: string;
-  profile: { name: string; username?: string | null; goal: number; avatar_key?: string | null };
+  profile: {
+    name: string;
+    username?: string | null;
+    goal: number;
+    avatar_key?: string | null;
+  };
   attributes: { label: string; value: number }[];
   paper_attributes: { label: string; value: number }[];
   recommendations: Book[];
