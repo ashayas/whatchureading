@@ -9,7 +9,6 @@ artifacts/
 !.env.example
 .dev.vars*
 wrangler.jsonc
-browser.wrangler.jsonc
 mcp.wrangler.jsonc
 worker-configuration.d.ts
 AGENTS.md
@@ -42,3 +41,8 @@ venv/
 docs/goodreads-import.md
 mobile-app/
 
+
+# Demo video: production backup/state and render outputs
+video/demo/.state*/
+video/out/
+video/public/captures/

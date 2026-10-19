@@ -66,10 +66,12 @@ for (const file of files) {
   }
   // INSERT...SELECT (a schema-migration table rebuild copying existing rows
   // by query) carries no literal data; only INSERT...VALUES or COPY...FROM do.
+  // Trigger bodies are skipped: their VALUES are new./old. row references.
+  const sql = text.replace(/\bCREATE\s+TRIGGER\b[\s\S]*?\bEND\s*;/gi, "");
   if (
     file.endsWith(".sql") &&
-    (/\bINSERT\s+INTO\s+\S+[\s\S]*?\bVALUES\s*\(/i.test(text) ||
-      /\bCOPY\s+\w+\s+FROM\b/i.test(text))
+    (/\bINSERT\s+INTO\s+\S+[\s\S]*?\bVALUES\s*\(/i.test(sql) ||
+      /\bCOPY\s+\w+\s+FROM\b/i.test(sql))
   ) {
     console.error(`Data-bearing SQL in ${file}`);
     problems++;

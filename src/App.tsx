@@ -25,7 +25,6 @@ import {
   Info,
   Users,
   UsersRound,
-  Wind,
   X,
 } from "lucide-react";
 import type {
@@ -49,7 +48,9 @@ import {
   RATING_THRESHOLD,
 } from "./types";
 import { authClient, signOut } from "./auth";
-import { PdfReader, loadPdfjs } from "./PdfReader";
+import { PdfReader, loadPdfjs, type NoteDraft } from "./PdfReader";
+import { backfillPapers, savePaperTopics, uploadPaperCover } from "./paperCover";
+import { analyzePdf, parseSignals, type PaperAnalysis } from "./paperTopics";
 import { AboutPage } from "./AboutPage";
 
 type Page =
@@ -86,30 +87,7 @@ type GoodreadsImportRecord = {
   description: string;
   history: Record<string, unknown>;
 };
-const GOODREADS_BROWSER_URL = "https://browser.whatchureading.com";
-async function browserApi<T = unknown>(
-  path: string,
-  method = "GET",
-  body?: unknown,
-): Promise<T> {
-  const client = await authClient();
-  const {
-    data: { session },
-  } = await client.auth.getSession();
-  if (!session) throw new Error("Please sign in to continue.");
-  const response = await fetch(`${GOODREADS_BROWSER_URL}/api/${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${session.access_token}`,
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = (await response.json()) as T & { error?: string };
-  if (!response.ok)
-    throw new Error(data.error || "Could not open the Goodreads browser.");
-  return data as T;
-}
+const GOODREADS_EXPORT_URL = "https://www.goodreads.com/review/import";
 const nav = [
   { id: "feed", name: "The feed", icon: BookOpen },
   { id: "friends", name: "Friends", icon: Users },
@@ -119,27 +97,89 @@ const nav = [
   { id: "groups", name: "Groups", icon: UsersRound },
   { id: "profile", name: "Your profile", icon: Users },
 ] as const;
+// Which LaTeX document class a paper's typeset cover imitates, by field.
+const TYPESET_CLASS: Record<string, string> = {
+  "Computer Science": "arxiv",
+  Mathematics: "amsart",
+  Physics: "arxiv",
+  "Life Sciences": "journal",
+  "Medicine & Health": "journal",
+  "Chemistry & Materials": "journal",
+  "Earth & Environment": "journal",
+  Engineering: "arxiv",
+  "Economics & Finance": "working",
+  "Social Sciences": "working",
+  Humanities: "essay",
+};
+// A clean, white, LaTeX-style title page for anything without real cover
+// art: papers without a first-page snapshot yet, and books whose cover
+// can't be found. Sized with container queries so it reads at any cover size.
+function TypesetCover({
+  book,
+}: {
+  book: Pick<Book, "title" | "author"> & Partial<Pick<Book, "kind" | "topic">>;
+}) {
+  const paper = book.kind === "paper";
+  const style = paper ? (TYPESET_CLASS[book.topic ?? ""] ?? "arxiv") : "title-page";
+  const kicker =
+    style === "arxiv"
+      ? `${book.topic ?? "Preprint"} · PDF`
+      : style === "journal"
+        ? "Research article"
+        : style === "working"
+          ? "Working paper"
+          : "";
+  return (
+    <span className={`typeset typeset-${style}`} aria-hidden="true">
+      {kicker && <span className="typeset-kicker">{kicker}</span>}
+      {style === "title-page" && <span className="typeset-rule" />}
+      <b className="typeset-title">{book.title}</b>
+      {book.author && <span className="typeset-author">{book.author}</span>}
+      {paper ? (
+        <>
+          <span className="typeset-abstract">{style === "amsart" ? "Abstract." : "Abstract"}</span>
+          <span className="typeset-lines" />
+        </>
+      ) : (
+        <>
+          <span className="typeset-rule" />
+          <span className="typeset-ornament">❦</span>
+        </>
+      )}
+    </span>
+  );
+}
 function Cover({
   book,
   className = "",
   onClick,
 }: {
-  book: Pick<Book, "id" | "title" | "author" | "isbn" | "color">;
+  book: Pick<Book, "id" | "title" | "author" | "isbn" | "color"> &
+    Partial<Pick<Book, "kind" | "topic" | "cover_key">>;
   className?: string;
   onClick?: () => void;
 }) {
   const [failed, setFailed] = useState(false);
-  const src = book.isbn?.startsWith("cover:")
-    ? `/api/v1/covers/${book.isbn.slice(6)}`
-    : `/covers/${book.id}.jpg`;
+  // Uploads have no catalog art: a paper shows its first-page snapshot once
+  // one exists, otherwise the typeset cover, without a doomed image request.
+  const src = book.cover_key
+    ? `/api/v1/upload-covers/${book.id}`
+    : book.isbn?.startsWith("cover:")
+      ? `/api/v1/covers/${book.isbn.slice(6)}`
+      : book.kind === "book" || book.kind === "paper"
+        ? null
+        : `/covers/${book.id}.jpg`;
+  const typeset = failed || !src;
   return (
     <button
-      className={"cover " + className}
-      style={{ background: book.color }}
+      className={"cover " + (typeset ? "cover-typeset " : "") + (book.cover_key ? "cover-snapshot " : "") + className}
+      style={typeset ? undefined : { background: book.color }}
       onClick={onClick}
       aria-label={"View " + book.title}
     >
-      {!failed ? (
+      {typeset ? (
+        <TypesetCover book={book} />
+      ) : (
         <img
           src={src}
           loading="lazy"
@@ -147,12 +187,6 @@ function Cover({
           alt={book.title + " cover"}
           onError={() => setFailed(true)}
         />
-      ) : (
-        <span className="cover-fallback">
-          <BookOpen />
-          <b>{book.title}</b>
-          <small>{book.author}</small>
-        </span>
       )}
     </button>
   );
@@ -358,7 +392,7 @@ function Radar({
   return (
     <svg
       className={"radar " + (compact ? "compact" : "")}
-      viewBox="0 0 300 280"
+      viewBox="-30 0 360 280"
       role="img"
       aria-label={
         "Reading attributes: " +
@@ -388,13 +422,28 @@ function Radar({
         strokeWidth="2"
       />
       {attributes.map((a, i) => {
-        const [x, y] = point(i, 1.28);
+        const [x, y] = point(i, 1.22);
         const [dx, dy] = point(i, a.value / 100);
+        // Long field names wrap onto two lines and anchor away from the
+        // centre so they stay inside the chart at any number of axes.
+        const anchor = Math.abs(x - cx) < 12 ? "middle" : x > cx ? "start" : "end";
+        const words = a.label.split(" ");
+        const lines =
+          a.label.length > 14 && words.length > 1
+            ? [
+                words.slice(0, Math.ceil(words.length / 2)).join(" "),
+                words.slice(Math.ceil(words.length / 2)).join(" "),
+              ]
+            : [a.label];
         return (
           <g key={a.label}>
             <circle cx={dx} cy={dy} r="3" fill="#365e42" />
-            <text x={x} y={y} textAnchor="middle" dominantBaseline="middle">
-              {a.label}
+            <text x={x} y={y - (lines.length - 1) * 5.5} textAnchor={anchor} dominantBaseline="middle">
+              {lines.map((line, n) => (
+                <tspan key={n} x={x} dy={n ? 11 : 0}>
+                  {line}
+                </tspan>
+              ))}
             </text>
           </g>
         );
@@ -566,6 +615,43 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
     wanted = data.library.filter((l) => l.status === "want"),
     didNotFinish = data.library.filter((l) => l.status === "did-not-finish");
   const papers = data.books.filter((b) => b.kind === "paper");
+  // Give the reader's own papers a first-page snapshot cover and a full-text
+  // field classification if they're missing (uploaded before either existed,
+  // or from the mobile app). Each id is tried once per session so a broken PDF
+  // can't cause a refresh loop.
+  const backfillAttempts = useRef(new Set<string>());
+  useEffect(() => {
+    const missing = papers.filter(
+      (p) =>
+        p.uploader_reader_id === data.reader_id &&
+        (!p.cover_key || !p.topic_signals) &&
+        !backfillAttempts.current.has(p.id),
+    );
+    if (!missing.length) return;
+    missing.forEach((p) => backfillAttempts.current.add(p.id));
+    backfillPapers(missing).then((changed) => {
+      if (changed) refresh();
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [papers.map((p) => `${p.id}:${p.cover_key ?? ""}:${p.topic_signals ? 1 : 0}`).join(","), data.reader_id]);
+  // Share of the reader's papers in each domain, from their classifications.
+  const paperDomains = (() => {
+    const totals = new Map<string, number>();
+    for (const p of papers) {
+      const signals = parseSignals(p.topic_signals);
+      const sum = signals.reduce((s, [, v]) => s + v, 0);
+      if (!sum && p.topic) totals.set(p.topic, (totals.get(p.topic) ?? 0) + 1);
+      for (const [k, v] of signals) {
+        const d = k.split("/")[0];
+        totals.set(d, (totals.get(d) ?? 0) + v / sum);
+      }
+    }
+    const all = [...totals.values()].reduce((s, v) => s + v, 0) || 1;
+    return [...totals.entries()]
+      .map(([label, v]) => ({ label, share: Math.round((100 * v) / all) }))
+      .filter((d) => d.share > 0)
+      .sort((a, b) => b.share - a.share);
+  })();
   const totalPages = data.library.reduce((sum, l) => sum + l.page, 0);
   const recommendations = data.recommendations.filter(
     (b) => genre === "All books" || b.genre === genre,
@@ -1820,13 +1906,39 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
               <section className="profile-dna">
                 <span className="eyebrow">YOUR ACADEMIC CARD</span>
                 <h2>Fields you're exploring.</h2>
-                <p>Scored from the papers you're reading and have finished.</p>
+                <p>
+                  Read from the full text of the papers you've uploaded,
+                  are reading and have finished.
+                </p>
                 <Radar attributes={data.paper_attributes} />
+                {paperDomains.length > 0 && (
+                  <div className="domain-mix" aria-label="Your papers by domain">
+                    <div className="domain-mix-bar">
+                      {paperDomains.map((d, i) => (
+                        <span
+                          key={d.label}
+                          style={{ flexGrow: d.share, opacity: 1 - Math.min(i, 6) * 0.12 }}
+                          title={`${d.label} ${d.share}%`}
+                        />
+                      ))}
+                    </div>
+                    <div className="domain-mix-legend">
+                      {paperDomains.map((d) => (
+                        <span key={d.label}>
+                          {d.label} <b>{d.share}%</b>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="attribute-list">
                   {data.paper_attributes.map((a) => (
                     <span key={a.label}>
-                      <span>{a.label}</span>
-                      <b>{a.value}</b>
+                      <span>
+                        {a.label}
+                        {a.kind === "field" && a.domain && <small className="attribute-domain">{a.domain}</small>}
+                      </span>
+                      <b>{a.share !== undefined ? `${a.share}%` : a.value}</b>
                     </span>
                   ))}
                 </div>
@@ -1837,7 +1949,7 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                 </small>
               </section>
               <div className="library-tabs">
-                {(["All", ...PAPER_TOPICS] as const).map((t) => (
+                {(["All", ...PAPER_TOPICS.filter((t) => papers.some((p) => p.topic === t))] as const).map((t) => (
                   <button
                     className={paperTopic === t ? "active" : ""}
                     key={t}
@@ -1861,6 +1973,15 @@ export default function App({ initialData }: { initialData: Bootstrap }) {
                       <article className="shelf-book" key={p.id}>
                         <Cover book={p} onClick={() => setSelected(p)} />
                         <span className="eyebrow">{p.topic}</span>
+                        {parseSignals(p.topic_signals).length > 0 && (
+                          <span className="field-chips">
+                            {parseSignals(p.topic_signals)
+                              .slice(0, 3)
+                              .map(([k]) => (
+                                <span key={k}>{k.split("/")[1]}</span>
+                              ))}
+                          </span>
+                        )}
                         <h3>
                           <button onClick={() => setSelected(p)}>
                             {p.title}
@@ -2538,40 +2659,6 @@ function csvNumber(value: string) {
   const match = value.replace(/,/g, "").match(/\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : 0;
 }
-function GoodreadsImportAnimation({ status }: { status: string }) {
-  const books = [
-    ["The Atlas of", "Clouds", "#d8e6c2"],
-    ["A Brief", "History", "#e6d6be"],
-    ["The Secret", "Garden", "#c9dce0"],
-    ["Tomorrow,", "and Tomorrow", "#ded0e4"],
-    ["The Long", "Way Home", "#e4cfc5"],
-  ];
-  return (
-    <div
-      className="goodreads-import-animation"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="import-books" aria-hidden="true">
-        {books.map(([first, second, color], index) => (
-          <div
-            className="import-book"
-            key={first}
-            style={{ background: color, animationDelay: `${index * 0.42}s` }}
-          >
-            <span>{first}</span>
-            <b>{second}</b>
-            <i />
-          </div>
-        ))}
-      </div>
-      <div>
-        <b>Bringing your shelves home</b>
-        <span>{status}</span>
-      </div>
-    </div>
-  );
-}
 function GoodreadsImportModal({
   close,
   refresh,
@@ -2586,74 +2673,6 @@ function GoodreadsImportModal({
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
   const [complete, setComplete] = useState(false);
-  const [bridgeStatus, setBridgeStatus] = useState("");
-  const [browserViewUrl, setBrowserViewUrl] = useState("");
-  const [browserImportId, setBrowserImportId] = useState("");
-  useEffect(() => {
-    if (!browserImportId) return;
-    let cancelled = false;
-    const poll = async () => {
-      try {
-        const result = await browserApi<{
-          status: string;
-          csv?: string;
-          error?: string;
-        }>(`status/${browserImportId}`);
-        if (cancelled) return;
-        if (result.status === "awaiting_login")
-          setBridgeStatus(
-            "Sign in inside the Goodreads window. We’ll continue automatically…",
-          );
-        else if (result.status === "exporting")
-          setBridgeStatus("Goodreads is preparing your library export…");
-        else if (result.status === "ready" && result.csv) {
-          setBridgeStatus(
-            "Your books are here. Review the import before adding anything.",
-          );
-          await chooseFile(
-            new File([result.csv], "goodreads_library_export.csv", {
-              type: "text/csv",
-            }),
-          );
-          void browserApi(`close/${browserImportId}`, "POST");
-          setBrowserImportId("");
-        } else if (result.status === "error") {
-          setError(result.error || "Goodreads could not finish the export.");
-          setBrowserImportId("");
-        }
-      } catch (error) {
-        if (!cancelled) setError((error as Error).message);
-      }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 2500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [browserImportId]);
-  const connectGoodreads = async () => {
-    setError("");
-    setBridgeStatus("Opening your private Goodreads browser…");
-    try {
-      const result = await browserApi<{
-        import_id: string;
-        live_view_url: string;
-      }>("start", "POST", {});
-      setBrowserImportId(result.import_id);
-      setBrowserViewUrl(result.live_view_url);
-      setBridgeStatus(
-        "Sign in inside the Goodreads window. We’ll handle the export from there.",
-      );
-    } catch (error) {
-      setError((error as Error).message);
-      setBridgeStatus("");
-    }
-  };
-  const dismiss = () => {
-    if (browserImportId) void browserApi(`close/${browserImportId}`, "POST");
-    close();
-  };
   const chooseFile = async (file?: File) => {
     if (!file) return;
     setError("");
@@ -2767,46 +2786,46 @@ function GoodreadsImportModal({
     {},
   );
   return (
-    <Modal close={dismiss} wide>
+    <Modal close={close} wide>
       {!complete ? (
         <>
           <span className="eyebrow">A LITTLE HELP FROM YOUR OLD BOOKSHELF</span>
           <h2>Bring your Goodreads library home.</h2>
           <p className="import-lede">
-            Sign in inside a private Goodreads browser. Your password stays with
-            Goodreads, and we only bring back the export you authorize.
+            Goodreads lets you download your whole library as a CSV. It takes
+            about a minute, and we never see your Goodreads password.
           </p>
           <div className="goodreads-steps">
             <div className="goodreads-step">
               <span>1</span>
               <div>
-                <b>Open your Goodreads browser</b>
+                <b>Open Goodreads’ export page</b>
                 <small>
-                  A private browser window opens right here for your Goodreads
-                  sign-in.
+                  Sign in if asked, then click <em>Export Library</em>.
                 </small>
               </div>
-              <button
+              <a
                 className="outline"
-                onClick={() => void connectGoodreads()}
+                href={GOODREADS_EXPORT_URL}
+                target="_blank"
+                rel="noreferrer"
               >
-                Start import <ExternalLink size={14} />
-              </button>
+                Open Goodreads <ExternalLink size={14} />
+              </a>
             </div>
             <div className="goodreads-step">
               <span>2</span>
               <div>
-                <b>Sign in and we’ll export</b>
+                <b>Download your export</b>
                 <small>
-                  After you sign in, the browser handles Goodreads’ visible
-                  library export.
+                  When the link appears on that page, save the CSV file.
                 </small>
               </div>
             </div>
             <div className="goodreads-step">
               <span>3</span>
               <div>
-                <b>Review and import</b>
+                <b>Drop it here</b>
                 <small>
                   We preview everything and add only books you haven’t imported
                   yet.
@@ -2814,26 +2833,6 @@ function GoodreadsImportModal({
               </div>
             </div>
           </div>
-          {bridgeStatus && (
-            <p className="import-bridge-status" role="status">
-              <Wind size={14} /> {bridgeStatus}
-            </p>
-          )}
-          {browserImportId && bridgeStatus && !records.length && (
-            <GoodreadsImportAnimation status={bridgeStatus} />
-          )}
-          {browserViewUrl && browserImportId && (
-            <div className="goodreads-browser-view">
-              <iframe
-                src={browserViewUrl}
-                title="Private Goodreads browser"
-                allow="clipboard-read; clipboard-write"
-              />
-              <a href={browserViewUrl} target="_blank" rel="noreferrer">
-                Open browser in a new tab <ExternalLink size={13} />
-              </a>
-            </div>
-          )}
           <label className="goodreads-dropzone">
             <FileSpreadsheet size={28} />
             <b>{fileName || "Choose your Goodreads CSV"}</b>
@@ -2866,7 +2865,7 @@ function GoodreadsImportModal({
             </div>
           )}
           <div className="modal-actions">
-            <button className="outline" onClick={dismiss}>
+            <button className="outline" onClick={close}>
               Cancel
             </button>
             <button
@@ -2897,7 +2896,7 @@ function GoodreadsImportModal({
             {records.length} books are now part of your reading life. You can
             update any shelf whenever you like.
           </p>
-          <button className="primary" onClick={dismiss}>
+          <button className="primary" onClick={close}>
             See my library <ArrowRight size={16} />
           </button>
         </div>
@@ -3105,6 +3104,8 @@ function UploadModal({
     [author, setAuthor] = useState(""),
     [kind, setKind] = useState<"book" | "paper">(defaultKind),
     [topic, setTopic] = useState<PaperTopic>(PAPER_TOPICS[0]),
+    [analysis, setAnalysis] = useState<PaperAnalysis | null>(null),
+    [topicTouched, setTopicTouched] = useState(false),
     [pages, setPages] = useState(0),
     [error, setError] = useState(""),
     [uploading, setUploading] = useState(false);
@@ -3130,6 +3131,17 @@ function UploadModal({
         { Title?: string; Author?: string } | undefined;
       if (info?.Title && !title) setTitle(info.Title);
       if (info?.Author && !author) setAuthor(info.Author);
+      // Read the whole paper to suggest its domain and fields. pdf.js has
+      // taken ownership of `data` (transferred to its worker), so read the
+      // file again rather than reusing that buffer.
+      setAnalysis(null);
+      f.arrayBuffer()
+        .then(analyzePdf)
+        .then((a) => {
+          setAnalysis(a);
+          if (a.domain && !topicTouched) setTopic(a.domain);
+        })
+        .catch(() => {});
     } catch {
       setError("That PDF couldn't be read. Try another file.");
       setFile(null);
@@ -3147,6 +3159,12 @@ function UploadModal({
         ...(kind === "paper" ? { topic } : {}),
       });
       await apiUploadPdf(`uploads/${created.id}/content`, "PUT", file);
+      // Best-effort: without a snapshot the paper gets a typeset cover, and
+      // without a classification the papers page backfills one later.
+      if (kind === "paper") {
+        await uploadPaperCover(created.id, file).catch(() => {});
+        if (analysis) await savePaperTopics(created.id, analysis).catch(() => {});
+      }
       await refresh();
       notify("Your PDF is ready to read");
       close();
@@ -3223,7 +3241,10 @@ function UploadModal({
               Field
               <select
                 value={topic}
-                onChange={(e) => setTopic(e.target.value as PaperTopic)}
+                onChange={(e) => {
+                  setTopicTouched(true);
+                  setTopic(e.target.value as PaperTopic);
+                }}
               >
                 {PAPER_TOPICS.map((t) => (
                   <option key={t} value={t}>
@@ -3232,6 +3253,17 @@ function UploadModal({
                 ))}
               </select>
             </label>
+          )}
+          {kind === "paper" && analysis && Object.keys(analysis.signals).length > 0 && (
+            <p className="detected-fields">
+              <span>Read from the paper:</span>
+              {Object.keys(analysis.signals)
+                .slice(0, 4)
+                .map((k) => (
+                  <b key={k}>{k.split("/")[1]}</b>
+                ))}
+              {analysis.arxivCategory && <small>arXiv {analysis.arxivCategory}</small>}
+            </p>
           )}
         </>
       )}
@@ -3636,6 +3668,9 @@ function BookModal({
     [reranking, setReranking] = useState(false),
     [revealed, setRevealed] = useState<string[]>([]);
   const [status, setStatus] = useState<Shelf>(item?.status || "want");
+  // A passage selected in the PDF reader, pending in the thought composer.
+  const [quote, setQuote] = useState<NoteDraft | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const publicNotes = notes.filter((n) => n.visibility !== "private");
   const privateNotes = notes.filter((n) => n.visibility === "private");
   const isUpload = book.kind !== "catalog";
@@ -3729,8 +3764,21 @@ function BookModal({
               book={book}
               page={page}
               onPageChange={setPage}
-              notes={publicNotes}
+              notes={notes}
               mutate={mutate}
+              onAddThought={(draft) => {
+                setQuote(draft);
+                requestAnimationFrame(() => {
+                  composerRef.current?.scrollIntoView({
+                    block: "center",
+                    behavior: matchMedia("(prefers-reduced-motion: reduce)")
+                      .matches
+                      ? "auto"
+                      : "smooth",
+                  });
+                  composerRef.current?.focus({ preventScroll: true });
+                });
+              }}
             />
           ) : (
             <div className="waveform">
@@ -3822,7 +3870,16 @@ function BookModal({
                 await mutate(
                   "notes",
                   "POST",
-                  { book_id: book.id, page, body, spoiler, visibility },
+                  {
+                    book_id: book.id,
+                    page: quote?.page ?? page,
+                    body,
+                    spoiler,
+                    visibility,
+                    ...(quote
+                      ? { quote: quote.quote, anchor: { rects: quote.rects } }
+                      : {}),
+                  },
                   visibility === "private"
                     ? "A private thought, just for you"
                     : "A thought, saved between the pages",
@@ -3830,12 +3887,27 @@ function BookModal({
               ) {
                 setBody("");
                 setSpoiler(false);
+                setQuote(null);
               }
             }}
           >
+            {quote && (
+              <figure className="thought-quote">
+                <blockquote>{quote.quote}</blockquote>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Remove quoted passage"
+                  onClick={() => setQuote(null)}
+                >
+                  <X size={14} />
+                </button>
+              </figure>
+            )}
             <label>
-              A thought on page {page}
+              A thought on page {quote?.page ?? page}
               <textarea
+                ref={composerRef}
                 placeholder="A line that stayed with you? A theory? A feeling?"
                 maxLength={2000}
                 required
@@ -3897,7 +3969,14 @@ function BookModal({
                     This thought contains spoilers. Click to reveal.
                   </button>
                 ) : (
-                  <p>{n.body}</p>
+                  <>
+                    {n.quote && (
+                      <blockquote className="thought-quote-inline">
+                        {n.quote}
+                      </blockquote>
+                    )}
+                    {n.body !== n.quote && <p>{n.body}</p>}
+                  </>
                 )}
               </article>
             ))

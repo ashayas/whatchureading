@@ -1,187 +1,27 @@
 import { authClient } from "./auth";
 export type Shelf = "reading" | "want" | "read" | "did-not-finish";
 export type BookKind = "catalog" | "book" | "paper";
+// Broad paper domains, chosen (or suggested from the paper's text) at upload.
+// The specific fields within each live in src/paperTopics.ts.
 export const PAPER_TOPICS = [
   "Computer Science",
-  "Physics & Math",
+  "Mathematics",
+  "Physics",
   "Life Sciences",
+  "Medicine & Health",
+  "Chemistry & Materials",
+  "Earth & Environment",
+  "Engineering",
+  "Economics & Finance",
   "Social Sciences",
-  "Economics",
   "Humanities",
 ] as const;
 export type PaperTopic = (typeof PAPER_TOPICS)[number];
-// A paper usually only touches a slice of its broad topic, so the papers
-// radar is built from these finer subtopics instead of one bucket per paper.
-// Matched against each page's text as it's read (see PdfReader); only the
-// subtopics for a paper's own topic are checked, to keep extraction cheap
-// and relevant.
-export const PAPER_SUBTOPICS: Record<
-  PaperTopic,
-  { label: string; keywords: string[] }[]
-> = {
-  "Computer Science": [
-    {
-      label: "Machine Learning",
-      keywords: [
-        "machine learning",
-        "neural network",
-        "deep learning",
-        "training",
-        "gradient",
-        "dataset",
-        "model accuracy",
-      ],
-    },
-    {
-      label: "Systems",
-      keywords: [
-        "distributed",
-        "latency",
-        "throughput",
-        "kernel",
-        "scheduler",
-        "cache",
-        "database",
-      ],
-    },
-    {
-      label: "Security",
-      keywords: [
-        "vulnerability",
-        "exploit",
-        "encryption",
-        "adversarial",
-        "attacker",
-        "privacy",
-      ],
-    },
-    {
-      label: "Theory",
-      keywords: [
-        "algorithm",
-        "complexity",
-        "theorem",
-        "proof",
-        "np-hard",
-        "computability",
-      ],
-    },
-  ],
-  "Physics & Math": [
-    {
-      label: "Quantum",
-      keywords: ["quantum", "qubit", "entanglement", "superposition"],
-    },
-    {
-      label: "Cosmology",
-      keywords: [
-        "universe",
-        "galaxy",
-        "cosmology",
-        "dark matter",
-        "relativity",
-      ],
-    },
-    {
-      label: "Statistics",
-      keywords: [
-        "probability",
-        "distribution",
-        "variance",
-        "regression",
-        "bayesian",
-      ],
-    },
-    {
-      label: "Pure Math",
-      keywords: ["theorem", "lemma", "manifold", "topology", "proof"],
-    },
-  ],
-  "Life Sciences": [
-    {
-      label: "Genetics",
-      keywords: ["gene", "genome", "dna", "mutation", "crispr", "allele"],
-    },
-    {
-      label: "Neuroscience",
-      keywords: ["neuron", "brain", "cortex", "synapse", "cognition"],
-    },
-    {
-      label: "Ecology",
-      keywords: ["ecosystem", "species", "habitat", "biodiversity", "climate"],
-    },
-    {
-      label: "Medicine",
-      keywords: ["clinical", "patient", "treatment", "trial", "diagnosis"],
-    },
-  ],
-  "Social Sciences": [
-    {
-      label: "Psychology",
-      keywords: ["behavior", "cognitive", "emotion", "personality", "therapy"],
-    },
-    {
-      label: "Sociology",
-      keywords: [
-        "society",
-        "inequality",
-        "culture",
-        "community",
-        "demographic",
-      ],
-    },
-    {
-      label: "Political Science",
-      keywords: [
-        "policy",
-        "government",
-        "election",
-        "democracy",
-        "institution",
-      ],
-    },
-    {
-      label: "Anthropology",
-      keywords: ["culture", "ritual", "ethnography", "kinship"],
-    },
-  ],
-  Economics: [
-    {
-      label: "Macroeconomics",
-      keywords: ["gdp", "inflation", "monetary", "fiscal", "unemployment"],
-    },
-    {
-      label: "Microeconomics",
-      keywords: ["market", "price", "supply", "demand", "incentive"],
-    },
-    {
-      label: "Finance",
-      keywords: ["investment", "asset", "portfolio", "risk", "return"],
-    },
-    {
-      label: "Game Theory",
-      keywords: ["equilibrium", "strategy", "payoff", "auction"],
-    },
-  ],
-  Humanities: [
-    {
-      label: "Philosophy",
-      keywords: ["ethics", "metaphysics", "epistemology", "existential"],
-    },
-    {
-      label: "History",
-      keywords: ["century", "empire", "revolution", "war", "archive"],
-    },
-    {
-      label: "Literature",
-      keywords: ["narrative", "poetics", "author", "novel"],
-    },
-    {
-      label: "Linguistics",
-      keywords: ["syntax", "semantics", "phonology", "grammar"],
-    },
-  ],
-};
+// Deprecated: per-page keyword counting in the reader was replaced by
+// full-text classification at upload (src/paperTopics.ts). Kept empty so the
+// reader extracts nothing until it stops referencing this.
+export const PAPER_SUBTOPICS: Record<string, { label: string; keywords: string[] }[]> =
+  Object.fromEntries(PAPER_TOPICS.map((t) => [t, []]));
 export interface Book {
   id: string;
   title: string;
@@ -200,6 +40,10 @@ export interface Book {
   uploader_reader_id: string | null;
   is_shared: number;
   topic: PaperTopic | null;
+  // R2 key of an uploaded paper's first-page snapshot, if one exists.
+  cover_key?: string | null;
+  // Full-text classification, JSON {"Domain/Field": share} (src/paperTopics.ts).
+  topic_signals?: string | null;
 }
 // Must match RATING_THRESHOLD in worker/lib.rs: how many books a reader must
 // rank before a normalized out-of-5 rating is derived and shown.
@@ -227,6 +71,10 @@ export interface Thought {
   spoiler: number;
   visibility: NoteVisibility;
   created_at: string;
+  /** Passage quoted from a PDF, when the thought came from a highlight. */
+  quote?: string | null;
+  /** JSON {"v":1,"rects":[[x,y,w,h],...]} of page-relative highlight rects. */
+  anchor?: string | null;
 }
 export interface Friend {
   id: string;
@@ -335,7 +183,13 @@ export interface Bootstrap {
     avatar_key?: string | null;
   };
   attributes: { label: string; value: number }[];
-  paper_attributes: { label: string; value: number }[];
+  paper_attributes: {
+    label: string;
+    value: number;
+    domain?: string;
+    kind?: "field" | "domain";
+    share?: number;
+  }[];
   recommendations: Book[];
   books: Book[];
   library: LibraryItem[];

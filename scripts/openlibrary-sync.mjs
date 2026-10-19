@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import readline from "node:readline";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 
 // Owns a monthly-refreshed, flattened slice of Open Library's edition dump in
@@ -19,7 +19,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 // `by_statement` (free text on the edition itself) rather than joining the
 // separate, much larger authors dump.
 
-const DUMP_URL = "https://openlibrary.org/data/ol_dump_editions_latest.txt.gz";
+// Overridable only so the sync can be exercised against a small local dump.
+const DUMP_URL =
+  process.env.OPENLIBRARY_DUMP_URL ||
+  "https://openlibrary.org/data/ol_dump_editions_latest.txt.gz";
 const DATABASE =
   process.env.OPENLIBRARY_D1_DATABASE || "whatchureading-openlibrary";
 const BUCKET =
@@ -363,24 +366,67 @@ async function uploadSnapshot(localGzPath, tmpDir) {
   fs.rmSync(manifestPath, { force: true });
 }
 
-async function loadPreviousFingerprints(tmpDir) {
+// Diffing ~22M editions can't hold them in a Map (that's several GB of heap,
+// which is what crashed the October runs), so both sides are written as
+// `id<TAB>fingerprint[<TAB>json]` lines, sorted on disk by id with the system
+// `sort` (which spills to temp files), and walked in step: memory stays at a
+// few lines no matter how large the index grows. JSON.stringify escapes tabs,
+// so a raw tab only ever separates columns.
+async function sortFile(src, dest, tmpDir) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(
+      "sort",
+      ["-t", "\t", "-k1,1", "-S", "25%", "-T", tmpDir, "-o", dest, src],
+      { env: { ...process.env, LC_ALL: "C" }, stdio: ["ignore", "inherit", "inherit"] },
+    );
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`sort exited ${code}`))));
+  });
+  fs.rmSync(src, { force: true });
+}
+
+async function writeKeyedLines(input, dest, withJson) {
+  const out = fs.createWriteStream(dest);
+  const rl = readline.createInterface({ input, crlfDelay: Infinity });
+  let count = 0;
+  for await (const line of rl) {
+    if (!line) continue;
+    const record = JSON.parse(line);
+    count++;
+    await writeLine(out, `${record.id}\t${record.fingerprint}${withJson ? `\t${line}` : ""}\n`);
+  }
+  await new Promise((resolve, reject) => out.end((err) => (err ? reject(err) : resolve())));
+  return count;
+}
+
+// Last month's snapshot as a sorted `id<TAB>fingerprint` file; null on the
+// very first run, when there is nothing to diff against.
+async function sortedPreviousKeys(tmpDir) {
   const gzPath = path.join(tmpDir, "previous.ndjson.gz");
   try {
     await downloadSnapshot(gzPath, tmpDir);
   } catch {
-    return new Map(); // No prior snapshot yet: first run, everything is an insert.
+    return null;
   }
-  const map = new Map();
-  const rl = readline.createInterface({
-    input: fs.createReadStream(gzPath).pipe(zlib.createGunzip()),
-    crlfDelay: Infinity,
-  });
-  for await (const line of rl) {
-    if (!line) continue;
-    const record = JSON.parse(line);
-    map.set(record.id, record.fingerprint);
-  }
-  return map;
+  const unsorted = path.join(tmpDir, "previous.keys");
+  const count = await writeKeyedLines(fs.createReadStream(gzPath).pipe(zlib.createGunzip()), unsorted, false);
+  fs.rmSync(gzPath, { force: true });
+  const sorted = path.join(tmpDir, "previous.sorted");
+  await sortFile(unsorted, sorted, tmpDir);
+  return { path: sorted, count };
+}
+
+function lineReader(file) {
+  const it = readline
+    .createInterface({ input: fs.createReadStream(file), crlfDelay: Infinity })
+    [Symbol.asyncIterator]();
+  return async () => {
+    for (;;) {
+      const { value, done } = await it.next();
+      if (done) return null;
+      if (value) return value;
+    }
+  };
 }
 
 function upsertStatement(rows) {
@@ -471,48 +517,78 @@ async function main() {
       `Scanned ${scanned} dump records, kept ${kept} English editions with an ISBN.`,
     );
 
+    console.log("Sorting this month's editions by id ...");
+    const currentUnsorted = path.join(tmpDir, "current.keys");
+    await writeKeyedLines(fs.createReadStream(currentPath), currentUnsorted, true);
+    const currentSorted = path.join(tmpDir, "current.sorted");
+    await sortFile(currentUnsorted, currentSorted, tmpDir);
+
     console.log("Loading previous month's snapshot for diffing ...");
-    const previous = await loadPreviousFingerprints(tmpDir);
-    console.log(`Previous snapshot had ${previous.size} editions.`);
+    const previous = await sortedPreviousKeys(tmpDir);
+    console.log(`Previous snapshot had ${previous?.count ?? 0} editions.`);
 
     const upsertApplier = makeBatchApplier(tmpDir, "upsert");
+    const deleteApplier = makeBatchApplier(tmpDir, "delete");
     const upsertRows = [];
+    const removedIds = [];
     let inserted = 0;
     let updated = 0;
-    const rl = readline.createInterface({
-      input: fs.createReadStream(currentPath),
-      crlfDelay: Infinity,
-    });
-    for await (const line of rl) {
-      if (!line) continue;
-      const record = JSON.parse(line);
-      const prevFingerprint = previous.get(record.id);
-      if (prevFingerprint === undefined) inserted++;
-      else if (prevFingerprint !== record.fingerprint) updated++;
-      else {
-        previous.delete(record.id);
-        continue; // Unchanged: nothing to write.
-      }
-      previous.delete(record.id);
-      upsertRows.push(record);
+    let removed = 0;
+    const nextCurrent = lineReader(currentSorted);
+    const nextPrevious = previous ? lineReader(previous.path) : async () => null;
+    const split = (line) => {
+      const first = line.indexOf("\t");
+      const second = line.indexOf("\t", first + 1);
+      return {
+        id: line.slice(0, first),
+        fingerprint: line.slice(first + 1, second === -1 ? undefined : second),
+        json: second === -1 ? null : line.slice(second + 1),
+      };
+    };
+    const upsert = async (json) => {
+      upsertRows.push(JSON.parse(json));
       if (upsertRows.length === ROWS_PER_UPSERT_STATEMENT) {
         await upsertApplier.add(upsertStatement(upsertRows.splice(0)));
+      }
+    };
+    const remove = async (id) => {
+      removed++;
+      removedIds.push(id);
+      if (removedIds.length === IDS_PER_DELETE_STATEMENT) {
+        await deleteApplier.add(deleteStatement(removedIds.splice(0)));
+      }
+    };
+    // Merge-join two id-sorted streams (byte order, matching LC_ALL=C sort).
+    let cur = await nextCurrent();
+    let prev = await nextPrevious();
+    while (cur !== null || prev !== null) {
+      const c = cur && split(cur);
+      const p = prev && split(prev);
+      if (c && (!p || c.id < p.id)) {
+        inserted++;
+        await upsert(c.json);
+        cur = await nextCurrent();
+      } else if (p && (!c || p.id < c.id)) {
+        await remove(p.id);
+        prev = await nextPrevious();
+      } else {
+        if (c.fingerprint !== p.fingerprint) {
+          updated++;
+          await upsert(c.json);
+        }
+        cur = await nextCurrent();
+        prev = await nextPrevious();
       }
     }
     if (upsertRows.length) await upsertApplier.add(upsertStatement(upsertRows));
     await upsertApplier.flush();
-
-    const deleteApplier = makeBatchApplier(tmpDir, "delete");
-    const removedIds = [...previous.keys()];
-    for (let i = 0; i < removedIds.length; i += IDS_PER_DELETE_STATEMENT) {
-      await deleteApplier.add(
-        deleteStatement(removedIds.slice(i, i + IDS_PER_DELETE_STATEMENT)),
-      );
-    }
+    if (removedIds.length) await deleteApplier.add(deleteStatement(removedIds));
     await deleteApplier.flush();
+    fs.rmSync(currentSorted, { force: true });
+    if (previous) fs.rmSync(previous.path, { force: true });
 
     console.log(
-      `Diff applied: ${inserted} new, ${updated} changed, ${removedIds.length} removed.`,
+      `Diff applied: ${inserted} new, ${updated} changed, ${removed} removed.`,
     );
 
     console.log(

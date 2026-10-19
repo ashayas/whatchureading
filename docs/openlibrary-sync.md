@@ -100,9 +100,27 @@ it.
   `wrangler` already authenticated (OAuth login is enough locally; CI needs
   the API token since it can't do an interactive login).
 
-## Not yet wired into the app
+## Serving search from the index
 
-This sync only populates `whatchureading-openlibrary`. The app's `/search`
-and `/books/import` endpoints still call Open Library's live search API.
-Querying this owned index from the Rust API (e.g. for import matching or to
-replace the live search call) is a follow-up, not part of this change.
+The app's `GET /api/v1/search` and the MCP server's `search_books` query this
+index through an `OPENLIBRARY` D1 binding (read-only by convention; only the
+sync and backfill scripts write to it):
+
+- `editions_fts` is an FTS5 table over `title` and `author` with external
+  content (`content='editions'`), so the text isn't stored twice. Triggers in
+  `migrations/openlibrary/0001_init.sql` keep it current as the monthly sync
+  upserts and deletes rows. A one-time population of an existing table runs
+  in rowid batches via `node scripts/openlibrary-fts-build.mjs` (~22M rows
+  written, ~0.9 GB, ~10 minutes).
+- Queries drop stopwords, match every remaining word (the last as a prefix
+  once it has 3+ characters), rank with BM25 weighting title over author, fold
+  editions into one result per work, boost works with more matching editions
+  and exact title matches, and merge duplicate works with the same title.
+- A cheap capped count runs first: queries matching more than 8,000 editions
+  (single common words) are too broad to rank within D1's CPU limit, so those,
+  thin result sets, and installs without the binding fall back to Open
+  Library's live search API.
+
+Known gap: `author` comes from the edition's free-text `by_statement`, which
+only ~23% of editions carry, so author-only searches lean on the live
+fallback. Enriching authors from the authors dump is the next step.

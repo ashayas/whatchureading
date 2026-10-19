@@ -384,6 +384,27 @@
   border-radius: 4px;
   margin: 12px 0 0;
 }
+.auth-success-banner {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 12px 14px;
+  color: #1e3a27;
+  background: #e6ede6;
+  border: 1px solid #c9d8c9;
+  border-radius: 6px;
+  margin: 12px 0 0;
+}
+.auth-app-link {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 8px 14px;
+  background: #243e30;
+  color: #ffffff !important;
+  border-radius: 6px;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 11px;
+}
 .auth-switch {
   font-size: 10px;
   color: #8b9180;

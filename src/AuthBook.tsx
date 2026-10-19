@@ -270,8 +270,13 @@ export function AuthRoot({
         if (callbackError) setError(callbackError);
         if (params.has("code") && !data.session) {
           setRecovery(false);
+          const isMobile =
+            typeof navigator !== "undefined" &&
+            /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
           setError(
-            "This sign-in link could not be opened. Use the browser where you requested it, or request a new link.",
+            isMobile
+              ? "Email confirmed! Open the Whatchu Reading app to sign in, or enter your password below."
+              : "Email confirmed! Your account is active. Enter your password below to sign in.",
           );
         }
         if (params.get("recovery") === "1" && !data.session) {
@@ -831,9 +836,24 @@ function AuthForm({
               </small>
             )}
             {error && (
-              <p id="auth-error" className="auth-error" role="alert">
-                {error}
-              </p>
+              <div
+                id="auth-error"
+                className={
+                  error.includes("Email confirmed")
+                    ? "auth-success-banner"
+                    : "auth-error"
+                }
+                role="alert"
+              >
+                <span>{error}</span>
+                {error.includes("Email confirmed") && (
+                  <div>
+                    <a href="whatchureading://" className="auth-app-link">
+                      Open Whatchu Reading App →
+                    </a>
+                  </div>
+                )}
+              </div>
             )}
             <button
               className="auth-primary"

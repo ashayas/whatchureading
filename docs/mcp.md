@@ -2,7 +2,7 @@
 
 `mcp-worker/` is a standalone Worker that lets AI agents (Claude, ChatGPT, or any MCP-compatible
 client) track reading progress, add books to "want to read", and leave comments on a reader's
-behalf. It is a second Worker beside the main Rust app and `browser-worker`, built on Cloudflare's
+behalf. It is a second Worker beside the main Rust app, built on Cloudflare's
 Agents SDK (`createMcpHandler`, stateless — no Durable Object), and bound to the same D1 `DB` as
 the main app.
 
@@ -40,8 +40,8 @@ before the MCP handler runs.
 
 Hosted at `mcp.whatchureading.com`, its own Worker (`whatchureading-mcp`) with its own
 `mcp.wrangler.jsonc` (gitignored; copy `mcp.wrangler.example.jsonc` and fill in your account/D1
-IDs, same as `browser.wrangler.jsonc`). Deploy with `npm run deploy:mcp`, or as part of
-`npm run deploy` alongside the app and browser Workers.
+IDs). Deploy with `npm run deploy:mcp`, or as part of
+`npm run deploy` alongside the app Worker.
 
 ## Self-hosting
 

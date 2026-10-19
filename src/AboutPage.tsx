@@ -462,9 +462,9 @@ export function AboutPage({
               <p>
                 <strong>How do I import my books from Goodreads?</strong>
                 <br />
-                Go to Discover &gt; Import from Goodreads. You can upload your
-                Goodreads export CSV file directly, and your shelves, ratings,
-                and reading dates will be mapped seamlessly.
+                Go to Discover &gt; Import from Goodreads. We link you to
+                Goodreads’ export page; upload the CSV it gives you, and your
+                shelves, ratings, and reading dates will be mapped seamlessly.
               </p>
 
               <p>
@@ -870,9 +870,9 @@ export function AboutPage({
                   </div>
                   <h3>Goodreads Importer</h3>
                   <p>
-                    Rescue your entire reading history in seconds. Import via
-                    standard CSV export or our private in-browser headless
-                    browser session without handing your credentials to anyone.
+                    Rescue your entire reading history in seconds. We link you
+                    straight to Goodreads’ export page; drop in the CSV and you
+                    never hand your credentials to anyone.
                   </p>
                 </div>
               </div>

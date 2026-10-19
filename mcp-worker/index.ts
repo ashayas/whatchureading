@@ -2,7 +2,9 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 
-type Env = { DB: D1Database };
+// OPENLIBRARY is the owned Open Library edition index; optional so a
+// self-hosted MCP server without it falls back to the live API.
+type Env = { DB: D1Database; OPENLIBRARY?: D1Database };
 type Book = { id: string; title: string; author: string; pages: number };
 type LibraryRow = { book_id: string; status: string; page: number; review: string; rank_position: number | null };
 
@@ -32,33 +34,97 @@ async function importBook(db: D1Database, key: string, title: string, author: st
   return bookId;
 }
 
-function createServer(db: D1Database, readerId: string) {
+type SearchHit = { open_library_key: string; title: string; author?: string; cover_id?: number; pages?: number };
+
+// Same query and ranking as the Rust API's search_owned_index (worker/lib.rs):
+// FTS5 + BM25 (title weighted over author), one result per work, works with
+// more matching editions floated up, exact title matches boosted.
+const SEARCH_STOPWORDS = new Set(["the", "a", "an", "of", "and", "in", "to", "for", "on", "with", "by", "at", "from", "is", "or", "de"]);
+const SEARCH_MAX_MATCHES = 8000;
+
+async function searchOwnedIndex(index: D1Database, query: string): Promise<SearchHit[]> {
+  const words = query
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((w) => w && !SEARCH_STOPWORDS.has(w))
+    .slice(0, 8);
+  if (!words.length) return [];
+  const matcher = words.map((w, i) => (i === words.length - 1 && w.length >= 3 ? `"${w}"*` : `"${w}"`)).join(" ");
+  // Too broad to rank within D1's CPU limit: let the live API answer.
+  const count = await index
+    .prepare("SELECT COUNT(*) AS n FROM (SELECT rowid FROM editions_fts WHERE editions_fts MATCH ?1 LIMIT ?2)")
+    .bind(matcher, SEARCH_MAX_MATCHES + 1)
+    .first<{ n: number }>();
+  if ((count?.n ?? 0) > SEARCH_MAX_MATCHES) return [];
+  const { results } = await index
+    .prepare(
+      "WITH hits AS (SELECT rowid, bm25(editions_fts, 4.0, 1.0) AS score FROM editions_fts WHERE editions_fts MATCH ?1 ORDER BY score LIMIT 400) " +
+        "SELECT COALESCE(e.work_key, e.id) AS key, e.title, MAX(e.author) AS author, e.pages, MAX(e.pages) AS max_pages, MAX(e.cover_id) AS cover_id, MIN(h.score) AS score, COUNT(*) AS editions " +
+        "FROM hits h JOIN editions e ON e.rowid = h.rowid GROUP BY COALESCE(e.work_key, e.id) ORDER BY score LIMIT 80",
+    )
+    .bind(matcher)
+    .all<{ key: string; title: string; author: string | null; pages: number | null; max_pages: number | null; cover_id: number | null; score: number; editions: number }>();
+  const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").split(/\s+/).filter(Boolean).join(" ");
+  const wanted = norm(query);
+  return results
+    .map((h) => {
+      const author = (h.author || "").split(/[;[(]/)[0].trim().replace(/^by /i, "").replace(/[.,/:]+$/, "").trim();
+      const title = norm(h.title);
+      const relevance =
+        -h.score + 1.5 * Math.log(1 + h.editions) + (title === wanted ? 6 : title.startsWith(wanted) ? 3 : 0) + (h.cover_id ? 1 : 0) + (author ? 0.5 : 0);
+      return {
+        relevance,
+        hit: { open_library_key: h.key, title: h.title, author: author || undefined, cover_id: h.cover_id || undefined, pages: h.pages || h.max_pages || undefined },
+      };
+    })
+    .sort((a, b) => b.relevance - a.relevance)
+    .map((r) => r.hit)
+    // Open Library often has one book under several work ids.
+    .filter((hit, i, all) => {
+      const t = norm(hit.title);
+      const a = norm(hit.author || "");
+      return !all.slice(0, i).some((o) => norm(o.title) === t && (!a || !o.author || norm(o.author) === a));
+    })
+    .slice(0, 12);
+}
+
+async function searchOpenLibraryLive(query: string): Promise<SearchHit[] | null> {
+  const upstream = new URL("https://openlibrary.org/search.json");
+  upstream.searchParams.set("q", query);
+  upstream.searchParams.set("limit", "12");
+  upstream.searchParams.set("fields", "key,title,author_name,cover_i,number_of_pages_median");
+  const res = await fetch(upstream, { headers: { "User-Agent": "whatchureading.com/0.1 (mcp)" } });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { docs?: Record<string, unknown>[] };
+  return (data.docs || []).map((d) => ({
+    open_library_key: d.key as string,
+    title: d.title as string,
+    author: (d.author_name as string[] | undefined)?.[0],
+    cover_id: d.cover_i as number | undefined,
+    pages: d.number_of_pages_median as number | undefined,
+  }));
+}
+
+function createServer(db: D1Database, readerId: string, index?: D1Database) {
   const server = new McpServer({ name: "whatchureading", version: "1.0.0" });
 
   server.registerTool(
     "search_books",
     {
-      description: "Search Open Library for a book by title/author. Returns candidates with the open_library_key needed by add_to_want_to_read.",
+      description: "Search the book catalog (the whatchureading Open Library index) by title and/or author. Returns candidates with the open_library_key needed by add_to_want_to_read.",
       inputSchema: { query: z.string().min(2).max(150) },
     },
     async ({ query }) => {
-      const upstream = new URL("https://openlibrary.org/search.json");
-      upstream.searchParams.set("q", query);
-      upstream.searchParams.set("limit", "12");
-      upstream.searchParams.set("fields", "key,title,author_name,cover_i,number_of_pages_median");
-      const res = await fetch(upstream, { headers: { "User-Agent": "whatchureading.com/0.1 (mcp)" } });
-      if (!res.ok) return textContent("The book catalog is taking a break. Try again shortly.");
-      const data = (await res.json()) as { docs?: unknown[] };
-      const results = (data.docs || []).map((doc) => {
-        const d = doc as Record<string, unknown>;
-        return {
-          open_library_key: d.key,
-          title: d.title,
-          author: (d.author_name as string[] | undefined)?.[0],
-          cover_id: d.cover_i,
-          pages: d.number_of_pages_median,
-        };
-      });
+      // Owned index first; the live API only tops up a thin result set.
+      const results = index ? await searchOwnedIndex(index, query).catch(() => [] as SearchHit[]) : [];
+      if (results.length < 5) {
+        const live = await searchOpenLibraryLive(query);
+        if (!live && !results.length) return textContent("The book catalog is taking a break. Try again shortly.");
+        for (const hit of live || []) {
+          if (results.length >= 12) break;
+          if (!results.some((r) => r.open_library_key === hit.open_library_key)) results.push(hit);
+        }
+      }
       return textContent(JSON.stringify(results));
     },
   );
@@ -190,7 +256,7 @@ export default {
         headers: { "Content-Type": "application/json" },
       });
     }
-    const handler = createMcpHandler(() => createServer(env.DB, reader.id));
+    const handler = createMcpHandler(() => createServer(env.DB, reader.id, env.OPENLIBRARY));
     return handler(request, env, ctx);
   },
 };

@@ -82,6 +82,214 @@ async fn cover(req: &Request, cover_id: &str) -> Result<Response> {
     cache.put(req, res.cloned()?).await?;
     Ok(res)
 }
+
+// Book search runs against the owned Open Library edition index (the
+// OPENLIBRARY D1 binding, synced monthly) instead of Open Library's live API.
+// FTS5 matches every word of the query (the last one also as a prefix, so
+// results firm up while typing), BM25 ranks title hits above author hits, and
+// editions are folded into one result per work, with works that have many
+// matching editions (a decent popularity signal) floated up. Results keep
+// Open Library's search.json field names so clients don't change.
+// Words too common to narrow ~22M titles; matching them would only make
+// BM25 score hundreds of thousands of rows. The exact-title boost below still
+// uses the full query, so "Klara and the Sun" ranks its own title first.
+const SEARCH_STOPWORDS: [&str; 16] = [
+    "the", "a", "an", "of", "and", "in", "to", "for", "on", "with", "by", "at", "from", "is", "or", "de",
+];
+// Ranking is only attempted when a query matches at most this many editions
+// (counting up to it is cheap; ranking far more exceeds D1's CPU limit).
+// Broader queries go to the live API, which handles them well.
+const SEARCH_MAX_MATCHES: i64 = 8000;
+fn fts_query(q: &str) -> Option<String> {
+    let words: Vec<String> = q
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .filter(|w| !SEARCH_STOPWORDS.contains(&w.as_str()))
+        .take(8)
+        .collect();
+    let last = words.len().checked_sub(1)?;
+    Some(
+        words
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                // A prefix on very short fragments expands to too many terms.
+                if i == last && w.chars().count() >= 3 {
+                    format!("\"{w}\"*")
+                } else {
+                    format!("\"{w}\"")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+// by_statement is free text: "by Cixin Liu ; translated by Ken Liu." -> "Cixin Liu".
+fn clean_author(raw: &str) -> String {
+    let first = raw.split([';', '[', '(']).next().unwrap_or("").trim();
+    let first = first
+        .strip_prefix("by ")
+        .or_else(|| first.strip_prefix("By "))
+        .unwrap_or(first);
+    first.trim().trim_end_matches(['.', ',', '/', ':']).trim().to_string()
+}
+fn normalized(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+async fn search_owned_index(db: &D1Database, q: &str) -> Result<Vec<Value>> {
+    let Some(matcher) = fts_query(q) else { return Ok(vec![]) };
+    let matches = rows(
+        db,
+        "SELECT COUNT(*) AS n FROM (SELECT rowid FROM editions_fts WHERE editions_fts MATCH ?1 LIMIT ?2)",
+        vec![arg(&matcher), num(SEARCH_MAX_MATCHES + 1)],
+    )
+    .await?;
+    if matches.first().map(|m| int(m, "n")).unwrap_or(0) > SEARCH_MAX_MATCHES {
+        return Ok(vec![]);
+    }
+    let hits = rows(
+        db,
+        "WITH hits AS (SELECT rowid, bm25(editions_fts, 4.0, 1.0) AS score FROM editions_fts WHERE editions_fts MATCH ?1 ORDER BY score LIMIT 400) \
+         SELECT COALESCE(e.work_key, e.id) AS key, e.title, MAX(e.author) AS author, e.pages, MAX(e.pages) AS max_pages, e.publish_date, \
+         MAX(e.cover_id) AS cover_id, MIN(h.score) AS score, COUNT(*) AS editions \
+         FROM hits h JOIN editions e ON e.rowid = h.rowid GROUP BY COALESCE(e.work_key, e.id) ORDER BY score LIMIT 80",
+        vec![arg(&matcher)],
+    )
+    .await?;
+    let wanted = normalized(q);
+    let mut ranked: Vec<(f64, Value)> = hits
+        .into_iter()
+        .map(|h| {
+            let title = text(&h, "title").to_string();
+            let author = clean_author(text(&h, "author"));
+            let editions = int(&h, "editions") as f64;
+            let bm25 = -h.get("score").and_then(Value::as_f64).unwrap_or(0.0);
+            let title_norm = normalized(&title);
+            let mut relevance = bm25 + 1.5 * (1.0 + editions).ln();
+            if title_norm == wanted {
+                relevance += 6.0;
+            } else if title_norm.starts_with(&wanted) {
+                relevance += 3.0;
+            }
+            if int(&h, "cover_id") > 0 {
+                relevance += 1.0;
+            }
+            if !author.is_empty() {
+                relevance += 0.5;
+            }
+            let pages = match int(&h, "pages") {
+                0 => int(&h, "max_pages"),
+                p => p,
+            };
+            let year = text(&h, "publish_date")
+                .split(|c: char| !c.is_ascii_digit())
+                .find(|p| p.len() == 4)
+                .and_then(|y| y.parse::<i64>().ok());
+            let doc = json!({
+                "key": text(&h, "key"),
+                "title": title,
+                "author_name": if author.is_empty() { json!([]) } else { json!([author]) },
+                "cover_i": match int(&h, "cover_id") { 0 => Value::Null, c => json!(c) },
+                "number_of_pages_median": if pages > 0 { json!(pages) } else { Value::Null },
+                "first_publish_year": year,
+                "edition_count": editions as i64,
+            });
+            (relevance, doc)
+        })
+        .collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0));
+    // Open Library often has one book under several work ids; keep the
+    // best-ranked of each title, unless the authors clearly differ.
+    let mut results: Vec<Value> = Vec::new();
+    for (_, doc) in ranked {
+        let title = normalized(doc["title"].as_str().unwrap_or(""));
+        let author = normalized(doc["author_name"][0].as_str().unwrap_or(""));
+        let duplicate = results.iter().any(|r| {
+            let other = normalized(r["author_name"][0].as_str().unwrap_or(""));
+            normalized(r["title"].as_str().unwrap_or("")) == title
+                && (author.is_empty() || other.is_empty() || author == other)
+        });
+        if !duplicate {
+            results.push(doc);
+        }
+        if results.len() == 12 {
+            break;
+        }
+    }
+    Ok(results)
+}
+async fn search_open_library_live(q: &str) -> Result<Option<Vec<Value>>> {
+    let mut upstream = Url::parse("https://openlibrary.org/search.json")?;
+    upstream
+        .query_pairs_mut()
+        .append_pair("q", q)
+        .append_pair("limit", "12")
+        .append_pair(
+            "fields",
+            "key,title,author_name,cover_i,number_of_pages_median,first_publish_year,subject",
+        );
+    let headers = Headers::new();
+    headers.set("User-Agent", "whatchureading.com/0.1 (book discovery POC)")?;
+    let mut res = Fetch::Request(Request::new_with_init(
+        upstream.as_str(),
+        RequestInit::new().with_headers(headers),
+    )?)
+    .send()
+    .await?;
+    if res.status_code() != 200 {
+        return Ok(None);
+    }
+    let data: Value = res.json().await?;
+    Ok(Some(data["docs"].as_array().cloned().unwrap_or_default()))
+}
+// Owned index first; live Open Library only tops up a thin result set (the
+// index's author coverage is partial) or stands in when the binding is absent
+// (self-hosted installs without the index) or the query fails.
+async fn search_books(env: &Env, q: &str) -> Result<Response> {
+    // Nothing left after stopwords (e.g. "the" while still typing): nothing
+    // useful to rank anywhere, and the live API errors on these too.
+    if fts_query(q).is_none() {
+        return reply(json!({"results":[],"source":"whatchureading index"}), 200);
+    }
+    let mut results = match env.d1("OPENLIBRARY") {
+        Ok(index) => search_owned_index(&index, q).await.unwrap_or_else(|e| {
+            console_error!("owned search failed: {e}");
+            vec![]
+        }),
+        Err(_) => vec![],
+    };
+    let owned = results.len();
+    if owned < 5 {
+        if let Ok(Some(live)) = search_open_library_live(q).await {
+            for doc in live {
+                if results.len() >= 12 {
+                    break;
+                }
+                if !results.iter().any(|r| r["key"] == doc["key"]) {
+                    results.push(doc);
+                }
+            }
+        } else if owned == 0 {
+            return reply(
+                json!({"error":"The book catalog is taking a break. Try again shortly."}),
+                502,
+            );
+        }
+    }
+    let source = match (owned, results.len()) {
+        (0, _) => "Open Library",
+        (o, n) if o == n => "whatchureading index",
+        _ => "whatchureading index + Open Library",
+    };
+    reply(json!({"results":results,"source":source}), 200)
+}
 // Self-serve avatars, proxied through this Worker and stored in the same R2
 // bucket as uploaded book/paper content. Public, no auth: avatars need to
 // render in other readers' feeds and friend lists.
@@ -114,6 +322,37 @@ async fn avatar(env: &Env, reader_id: &str) -> Result<Response> {
     res.headers_mut().set("Content-Type", &content_type)?;
     res.headers_mut()
         .set("Cache-Control", "public, max-age=3600")?;
+    Ok(res)
+}
+// First-page snapshots of uploaded papers. Public like avatars (an <img> can't
+// send a bearer token) but only for papers, never personal uploaded books, and
+// only reachable by the paper's unguessable id.
+async fn upload_cover(env: &Env, book_id: &str) -> Result<Response> {
+    if book_id.is_empty() || book_id.len() > 64 {
+        return reply(json!({"error":"Not found"}), 404);
+    }
+    let book = env
+        .d1("DB")?
+        .prepare("SELECT cover_key FROM books WHERE id=? AND kind='paper'")
+        .bind(&[arg(book_id)])?
+        .first::<Value>(None)
+        .await?;
+    let Some(key) = book.and_then(|b| b.get("cover_key").and_then(Value::as_str).map(str::to_string)) else {
+        return reply(json!({"error":"Not found"}), 404);
+    };
+    let Some(object) = env.bucket("UPLOADS")?.get(&key).execute().await? else {
+        return reply(json!({"error":"Not found"}), 404);
+    };
+    let Some(body) = object.body() else {
+        return reply(json!({"error":"Not found"}), 404);
+    };
+    let content_type = object
+        .http_metadata()
+        .content_type
+        .unwrap_or_else(|| "image/jpeg".into());
+    let mut res = Response::from_bytes(body.bytes().await?)?;
+    res.headers_mut().set("Content-Type", &content_type)?;
+    res.headers_mut().set("Cache-Control", "public, max-age=86400")?;
     Ok(res)
 }
 // Never accept browser-supplied reader IDs. Supabase verifies the bearer token;
@@ -150,6 +389,11 @@ async fn authenticated(req: &Request, env: &Env) -> Result<Response> {
     if let Some(reader_id) = path.strip_prefix("/api/v1/avatar/") {
         if req.method() == Method::Get {
             return avatar(env, reader_id).await;
+        }
+    }
+    if let Some(book_id) = path.strip_prefix("/api/v1/upload-covers/") {
+        if req.method() == Method::Get {
+            return upload_cover(env, book_id).await;
         }
     }
     let auth_url = env.secret("AUTH_SUPABASE_URL")?.to_string();
@@ -276,6 +520,34 @@ fn valid_username(username: &str) -> bool {
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
 }
+// D1 enforces foreign keys, so order matters: everything that references the
+// reader's uploads, owned groups, or the reader row itself must go first.
+// One bound parameter (?1 = reader id) throughout. Exercised against a local
+// D1 fixture by scripts/account-delete-check.mjs.
+const ACCOUNT_DELETE_SQL: &[&str] = &[
+    // Their uploads leave everyone's shelves (the R2 content is deleted too).
+    "DELETE FROM group_pick_comments WHERE pick_id IN (SELECT id FROM group_picks WHERE book_id IN (SELECT id FROM books WHERE uploader_reader_id=?1))",
+    "DELETE FROM group_picks WHERE book_id IN (SELECT id FROM books WHERE uploader_reader_id=?1)",
+    "DELETE FROM library WHERE book_id IN (SELECT id FROM books WHERE uploader_reader_id=?1)",
+    "DELETE FROM notes WHERE book_id IN (SELECT id FROM books WHERE uploader_reader_id=?1)",
+    "DELETE FROM swipes WHERE book_id IN (SELECT id FROM books WHERE uploader_reader_id=?1)",
+    // Groups they own go with them.
+    "DELETE FROM group_pick_comments WHERE pick_id IN (SELECT id FROM group_picks WHERE group_id IN (SELECT id FROM groups WHERE created_by=?1))",
+    "DELETE FROM group_picks WHERE group_id IN (SELECT id FROM groups WHERE created_by=?1)",
+    "DELETE FROM group_members WHERE group_id IN (SELECT id FROM groups WHERE created_by=?1)",
+    "DELETE FROM groups WHERE created_by=?1",
+    // In other people's groups: comments go, picks stay credited to the owner.
+    "DELETE FROM group_pick_comments WHERE reader_id=?1",
+    "UPDATE group_picks SET selected_by=(SELECT created_by FROM groups WHERE groups.id=group_picks.group_id) WHERE selected_by=?1",
+    "DELETE FROM group_members WHERE reader_id=?1",
+    "DELETE FROM library WHERE reader_id=?1",
+    "DELETE FROM notes WHERE reader_id=?1",
+    "DELETE FROM swipes WHERE reader_id=?1",
+    "DELETE FROM likes WHERE reader_id=?1",
+    "DELETE FROM reader_friends WHERE reader_id=?1 OR friend_id=?1",
+    "DELETE FROM books WHERE uploader_reader_id=?1",
+    "DELETE FROM readers WHERE id=?1",
+];
 // Readers rank finished books against each other instead of picking a number.
 // A 1-5 rating is only derived, and only shown, once enough books are ranked.
 const RATING_THRESHOLD: i64 = 5;
@@ -311,78 +583,125 @@ fn genre_attribute(genre: &str) -> usize {
         _ => 5,
     }
 }
-const PAPER_TOPICS: [&str; 6] = [
+// Broad paper domains (src/paperTopics.ts PAPER_DOMAINS), chosen at upload.
+const PAPER_TOPICS: [&str; 11] = [
     "Computer Science",
-    "Physics & Math",
+    "Mathematics",
+    "Physics",
     "Life Sciences",
+    "Medicine & Health",
+    "Chemistry & Materials",
+    "Earth & Environment",
+    "Engineering",
+    "Economics & Finance",
     "Social Sciences",
-    "Economics",
     "Humanities",
 ];
-fn topic_attribute(topic: &str) -> usize {
-    PAPER_TOPICS.iter().position(|t| *t == topic).unwrap_or(5)
-}
 // A separate radar from the book attributes above: areas of academic learning,
-// scored only from uploaded papers (kind="paper"), never books. Most papers
-// only touch a slice of their broad topic, so this is built from subtopic
-// keyword signals the reader extracts client-side as they read a paper
-// (library.topic_signals), not a single topic chosen once at upload. Papers
-// that haven't been opened yet (no signals) fall back to their upload-time
-// topic so the radar isn't empty before anyone starts reading.
-fn paper_attributes(library: &[Value], books: &[Value]) -> Value {
+// scored only from papers (kind="paper"), never books. Each paper carries a
+// full-text classification, books.topic_signals = {"Domain/Field": share}
+// (shares sum to ~100; see src/paperTopics.ts), so the axes are whichever
+// specific fields this reader actually reads most, not a fixed list. Each
+// paper counts by how far the reader got with it: finished > reading > their
+// own unread upload > want-to-read. Papers without a classification yet fall
+// back to legacy per-reader signals, then to their upload-time domain. With
+// fewer than three distinct fields the radar shows domains instead.
+fn paper_attributes(library: &[Value], books: &[Value], reader_id: &str) -> Value {
     use std::collections::HashMap;
-    let mut scores: HashMap<String, i64> = HashMap::new();
-    let mut any_signal = false;
-    for item in library {
-        if matches!(text(item, "status"), "want" | "did-not-finish") {
-            continue;
-        }
-        if !books
-            .iter()
-            .any(|b| b["id"] == item["book_id"] && text(b, "kind") == "paper")
-        {
-            continue;
-        }
-        let weight = if text(item, "status") == "read" { 18 } else { 8 };
-        if let Some(signals) = item.get("topic_signals").and_then(Value::as_str) {
-            if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(signals) {
-                for (subtopic, count) in m {
-                    let hits = count.as_i64().unwrap_or(0);
-                    if hits > 0 {
-                        any_signal = true;
-                        *scores.entry(subtopic).or_insert(0) += weight * hits.min(5);
-                    }
-                }
-            }
+    let weight_for = |status: &str| match status {
+        "read" => 3.0,
+        "reading" => 2.0,
+        "want" => 0.5,
+        _ => 0.0,
+    };
+    let mut weighted: Vec<(f64, &Value, Option<&Value>)> = Vec::new();
+    for b in books.iter().filter(|b| text(b, "kind") == "paper") {
+        let item = library.iter().find(|l| l["book_id"] == b["id"]);
+        let w = match item {
+            Some(item) => weight_for(text(item, "status")),
+            None if text(b, "uploader_reader_id") == reader_id && !reader_id.is_empty() => 1.0,
+            None => 0.0,
+        };
+        if w > 0.0 {
+            weighted.push((w, b, item));
         }
     }
-    if !any_signal {
-        let mut fallback = [15i64; 6];
-        for item in library {
-            if matches!(text(item, "status"), "want" | "did-not-finish") {
-                continue;
-            }
-            if let Some(b) = books
-                .iter()
-                .find(|b| b["id"] == item["book_id"] && text(b, "kind") == "paper")
-            {
-                let weight = if text(item, "status") == "read" { 18 } else { 8 };
-                fallback[topic_attribute(text(b, "topic"))] += weight;
-            }
+    let parse = |v: Option<&Value>| -> Vec<(String, f64)> {
+        v.and_then(Value::as_str)
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .map(|m| {
+                m.into_iter()
+                    .filter_map(|(k, v)| v.as_f64().filter(|n| *n > 0.0).map(|n| (k, n)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let mut fields: HashMap<String, f64> = HashMap::new();
+    let mut domains: HashMap<String, f64> = HashMap::new();
+    for (w, book, item) in &weighted {
+        let topic = text(book, "topic");
+        let mut signals = parse(book.get("topic_signals"));
+        if signals.is_empty() {
+            // Legacy per-reader keyword hits keyed by bare subtopic label.
+            signals = parse(item.and_then(|i| i.get("topic_signals")))
+                .into_iter()
+                .map(|(k, n)| (if k.contains('/') || topic.is_empty() { k } else { format!("{topic}/{k}") }, n))
+                .collect();
         }
-        return json!(PAPER_TOPICS
-            .iter()
-            .enumerate()
-            .map(|(i, label)| json!({"label":label,"value":fallback[i].min(99)}))
-            .collect::<Vec<_>>());
+        let total: f64 = signals.iter().map(|(_, n)| n).sum();
+        if total > 0.0 {
+            for (key, n) in signals {
+                let share = w * n / total;
+                let domain = key.split('/').next().unwrap_or("").to_string();
+                *fields.entry(key).or_insert(0.0) += share;
+                *domains.entry(domain).or_insert(0.0) += share;
+            }
+        } else if !topic.is_empty() {
+            *domains.entry(topic.to_string()).or_insert(0.0) += w;
+        }
     }
-    let mut ranked: Vec<(String, i64)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    ranked.truncate(8);
-    json!(ranked
-        .iter()
-        .map(|(label, value)| json!({"label":label,"value":(*value + 15).min(99)}))
-        .collect::<Vec<_>>())
+    let scale = |ranked: Vec<(String, f64)>, kind: &str| -> Value {
+        let max = ranked.first().map(|r| r.1).unwrap_or(1.0).max(f64::EPSILON);
+        let total: f64 = ranked.iter().map(|r| r.1).sum::<f64>().max(f64::EPSILON);
+        json!(ranked
+            .iter()
+            .map(|(key, v)| {
+                let mut parts = key.splitn(2, '/');
+                let (domain, field) = (parts.next().unwrap_or(""), parts.next());
+                json!({
+                    "label": field.unwrap_or(domain),
+                    "domain": domain,
+                    "kind": kind,
+                    "value": (15.0 + 84.0 * v / max).round() as i64,
+                    "share": (100.0 * v / total).round() as i64,
+                })
+            })
+            .collect::<Vec<_>>())
+    };
+    let mut ranked_fields: Vec<(String, f64)> = fields.into_iter().filter(|(k, _)| k.contains('/')).collect();
+    ranked_fields.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if let Some(top) = ranked_fields.first().map(|r| r.1) {
+        ranked_fields.retain(|r| r.1 >= top * 0.08);
+    }
+    ranked_fields.truncate(8);
+    if ranked_fields.len() >= 3 {
+        return scale(ranked_fields, "field");
+    }
+    // Too few fields for a shape: show domains, padded with the remaining
+    // domains at the baseline so a new reader still sees a full radar.
+    let mut ranked_domains: Vec<(String, f64)> = domains.into_iter().collect();
+    ranked_domains.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    for d in PAPER_TOPICS {
+        if ranked_domains.len() >= 6 {
+            break;
+        }
+        if !ranked_domains.iter().any(|r| r.0 == d) {
+            ranked_domains.push((d.to_string(), 0.0));
+        }
+    }
+    ranked_domains.truncate(8);
+    scale(ranked_domains, "domain")
 }
 fn attributes(library: &[Value], books: &[Value]) -> Value {
     let mut scores = [15i64; 6];
@@ -619,7 +938,7 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             .first::<Value>(None)
             .await?;
         return reply(
-            json!({"reader_id":id,"profile":profile,"attributes":attributes(&library,&books),"paper_attributes":paper_attributes(&library,&books),"recommendations":recommendations(&books,&library,&swipes),"books":books,"library":library,"notes":notes,"likes":likes,"friends":friends,"friend_notes":friend_notes,"demo_friends":false}),
+            json!({"reader_id":id,"profile":profile,"attributes":attributes(&library,&books),"paper_attributes":paper_attributes(&library,&books,id),"recommendations":recommendations(&books,&library,&swipes),"books":books,"library":library,"notes":notes,"likes":likes,"friends":friends,"friend_notes":friend_notes,"demo_friends":false}),
             200,
         );
     }
@@ -632,31 +951,7 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         if q.trim().len() < 2 || q.len() > 150 {
             return bad("Search must be between 2 and 150 characters");
         }
-        let mut upstream = Url::parse("https://openlibrary.org/search.json")?;
-        upstream
-            .query_pairs_mut()
-            .append_pair("q", q.trim())
-            .append_pair("limit", "12")
-            .append_pair(
-                "fields",
-                "key,title,author_name,cover_i,number_of_pages_median,first_publish_year,subject",
-            );
-        let headers = Headers::new();
-        headers.set("User-Agent", "whatchureading.com/0.1 (book discovery POC)")?;
-        let mut res = Fetch::Request(Request::new_with_init(
-            upstream.as_str(),
-            RequestInit::new().with_headers(headers),
-        )?)
-        .send()
-        .await?;
-        if res.status_code() != 200 {
-            return reply(
-                json!({"error":"The book catalog is taking a break. Try again shortly."}),
-                502,
-            );
-        }
-        let data: Value = res.json().await?;
-        return reply(json!({"results":data["docs"],"source":"Open Library"}), 200);
+        return search_books(env, q.trim()).await;
     }
     if !matches!(method, Method::Post | Method::Put | Method::Delete) {
         return reply(json!({"error":"Not found"}), 404);
@@ -697,6 +992,46 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
                 .execute()
                 .await?;
             return reply(json!({"ok":true}), 200);
+        }
+        if let Some(book_id) = path
+            .strip_prefix("/api/v1/uploads/")
+            .and_then(|p| p.strip_suffix("/cover"))
+        {
+            let owned = db
+                .prepare("SELECT id FROM books WHERE id=? AND uploader_reader_id=? AND kind='paper'")
+                .bind(&[arg(book_id), arg(id)])?
+                .first::<Value>(None)
+                .await?;
+            if owned.is_none() {
+                return reply(json!({"error":"Not found"}), 404);
+            }
+            let bytes = req.bytes().await?;
+            if bytes.len() > 1_500_000 {
+                return reply(json!({"error":"Cover is too large (1.5MB limit)"}), 413);
+            }
+            let content_type = if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+                "image/jpeg"
+            } else if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+                "image/png"
+            } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+                "image/webp"
+            } else {
+                return bad("Cover must be a JPEG, PNG or WebP image");
+            };
+            let key = format!("uploads/{id}/{book_id}.cover");
+            env.bucket("UPLOADS")?
+                .put(&key, bytes)
+                .http_metadata(HttpMetadata {
+                    content_type: Some(content_type.into()),
+                    ..Default::default()
+                })
+                .execute()
+                .await?;
+            db.prepare("UPDATE books SET cover_key=? WHERE id=?")
+                .bind(&[arg(&key), arg(book_id)])?
+                .run()
+                .await?;
+            return reply(json!({"ok":true,"cover_key":key}), 200);
         }
         if path == "/api/v1/avatar" {
             let bytes = req.bytes().await?;
@@ -1061,6 +1396,37 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             return reply(json!({"ok":true,"id":comment_id}), 201);
         }
     }
+    // A paper's full-text classification (src/paperTopics.ts), saved by its
+    // uploader; only the uploader can label their paper.
+    if method == Method::Put {
+        if let Some(book_id) = path
+            .strip_prefix("/api/v1/uploads/")
+            .and_then(|p| p.strip_suffix("/topics"))
+        {
+            let Some(Value::Object(signals)) = v.get("signals") else {
+                return bad("Send the paper's field signals");
+            };
+            let valid = signals.len() <= 12
+                && signals.iter().all(|(k, n)| {
+                    k.len() <= 80
+                        && PAPER_TOPICS.contains(&k.split('/').next().unwrap_or(""))
+                        && n.as_f64().is_some_and(|n| (0.0..=100.0).contains(&n))
+                });
+            if !valid {
+                return bad("Unrecognized field signals");
+            }
+            let encoded = serde_json::to_string(signals).unwrap_or_default();
+            let result = db
+                .prepare("UPDATE books SET topic_signals=? WHERE id=? AND uploader_reader_id=? AND kind='paper'")
+                .bind(&[arg(&encoded), arg(book_id), arg(id)])?
+                .run()
+                .await?;
+            if result.meta()?.and_then(|m| m.changes).unwrap_or(0) == 0 {
+                return reply(json!({"error":"Not found"}), 404);
+            }
+            return reply(json!({"ok":true}), 200);
+        }
+    }
     if method == Method::Delete {
         if let Some(group_id) = path
             .strip_prefix("/api/v1/groups/")
@@ -1103,17 +1469,12 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
     };
     let pages = int(&book, "pages");
     if path == "/api/v1/account" && method == Method::Delete {
-        // Full self-service erase of everything this app itself stores for the
-        // reader (D1 rows + R2 objects). Deliberately does not touch the
-        // Supabase auth identity: the Worker never holds a privileged Supabase
-        // key (see AGENTS.md), so the login record is left behind -- the
-        // reader simply gets a fresh, empty account if they sign back in with
-        // the same email. Other readers' shared content that references this
-        // reader (group picks/comments they made, uploaded books/papers) is
-        // left in place rather than cascaded, matching how the app already
-        // tolerates orphaned references elsewhere.
+        // Full self-service erase of everything this app stores for the reader
+        // (D1 rows + R2 objects). Deliberately does not touch the Supabase auth
+        // identity: the Worker never holds a privileged Supabase key (see
+        // AGENTS.md), so a reader who signs back in gets a fresh, empty account.
         let owned = db
-            .prepare("SELECT avatar_key, (SELECT GROUP_CONCAT(content_key) FROM books WHERE uploader_reader_id=readers.id AND content_key IS NOT NULL) AS upload_keys FROM readers WHERE id=?")
+            .prepare("SELECT avatar_key, (SELECT GROUP_CONCAT(k) FROM (SELECT content_key AS k FROM books WHERE uploader_reader_id=readers.id AND content_key IS NOT NULL UNION ALL SELECT cover_key FROM books WHERE uploader_reader_id=readers.id AND cover_key IS NOT NULL)) AS upload_keys FROM readers WHERE id=?")
             .bind(&[arg(id)])?
             .first::<Value>(None)
             .await?;
@@ -1126,18 +1487,11 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
                 object_keys.extend(upload_keys.split(',').map(str::to_string));
             }
         }
-        db.batch(vec![
-            db.prepare("DELETE FROM library WHERE reader_id=?").bind(&[arg(id)])?,
-            db.prepare("DELETE FROM notes WHERE reader_id=?").bind(&[arg(id)])?,
-            db.prepare("DELETE FROM swipes WHERE reader_id=?").bind(&[arg(id)])?,
-            db.prepare("DELETE FROM likes WHERE reader_id=?").bind(&[arg(id)])?,
-            db.prepare("DELETE FROM reader_friends WHERE reader_id=? OR friend_id=?").bind(&[arg(id), arg(id)])?,
-            db.prepare("DELETE FROM goodreads_browser_sessions WHERE reader_id=?").bind(&[arg(id)])?,
-            db.prepare("DELETE FROM group_members WHERE reader_id=?").bind(&[arg(id)])?,
-            db.prepare("DELETE FROM books WHERE uploader_reader_id=?").bind(&[arg(id)])?,
-            db.prepare("DELETE FROM readers WHERE id=?").bind(&[arg(id)])?,
-        ])
-        .await?;
+        let mut statements = Vec::with_capacity(ACCOUNT_DELETE_SQL.len());
+        for statement in ACCOUNT_DELETE_SQL {
+            statements.push(db.prepare(*statement).bind(&[arg(id)])?);
+        }
+        db.batch(statements).await?;
         if !object_keys.is_empty() {
             if let Ok(bucket) = env.bucket("UPLOADS") {
                 // Best-effort: the account's D1 data is already gone, which is
@@ -1256,6 +1610,21 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
         if page < 0 || page > pages || note.is_empty() || note.len() > 2000 {
             return bad("A thought needs text and a valid page");
         }
+        // Optional PDF highlight: the quoted passage plus page-relative rects
+        // (fractions 0..1), re-serialized so only well-formed numbers persist.
+        let quote = text(&v, "quote").trim();
+        let quote = if quote.is_empty() { None } else { Some(quote.chars().take(2000).collect::<String>()) };
+        let anchor = v["anchor"]["rects"].as_array().and_then(|list| {
+            let rects: Vec<Vec<f64>> = list
+                .iter()
+                .take(64)
+                .filter_map(|r| {
+                    let r: Vec<f64> = r.as_array()?.iter().filter_map(Value::as_f64).collect();
+                    (r.len() == 4 && r.iter().all(|n| (0.0..=1.0).contains(n))).then_some(r)
+                })
+                .collect();
+            (!rects.is_empty()).then(|| json!({"v":1,"rects":rects}).to_string())
+        });
         let note_id = Uuid::new_v4().to_string();
         db.batch(vec![
             // A comment implies the reader is engaging with the book; if it
@@ -1264,7 +1633,7 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
             db.prepare("INSERT OR IGNORE INTO library(reader_id,book_id,status,page,review,started_at) VALUES (?,?,'reading',0,'',CURRENT_TIMESTAMP)")
                 .bind(&[arg(id), arg(book_id)])?,
             db.prepare(
-                "INSERT INTO notes(id,reader_id,book_id,page,body,spoiler,visibility) VALUES (?,?,?,?,?,?,?)",
+                "INSERT INTO notes(id,reader_id,book_id,page,body,spoiler,visibility,quote,anchor) VALUES (?,?,?,?,?,?,?,?,?)",
             )
             .bind(&[
                 arg(&note_id),
@@ -1278,6 +1647,8 @@ async fn handle(mut req: Request, env: &Env, id: &str) -> Result<Response> {
                     0
                 }),
                 arg(visibility),
+                opt_arg(&quote),
+                opt_arg(&anchor),
             ])?,
         ])
         .await?;
@@ -1363,17 +1734,44 @@ mod tests {
     #[test]
     fn paper_attributes_only_count_papers_by_topic() {
         let books = vec![
-            json!({"id":"a","kind":"paper","topic":"Physics & Math"}),
+            json!({"id":"a","kind":"paper","topic":"Physics"}),
             json!({"id":"b","kind":"book","genre":"Fiction"}),
         ];
         let library = vec![
             json!({"book_id":"a","status":"read"}),
             json!({"book_id":"b","status":"read"}),
         ];
-        let result = paper_attributes(&library, &books);
-        assert_eq!(result[1]["label"], "Physics & Math");
-        assert_eq!(result[1]["value"], 33);
-        assert_eq!(result[0]["value"], 15);
+        let result = paper_attributes(&library, &books, "me");
+        assert_eq!(result[0]["label"], "Physics");
+        assert_eq!(result[0]["kind"], "domain");
+        assert_eq!(result[0]["value"], 99);
+        assert_eq!(result.as_array().unwrap().len(), 6);
+        assert!(result.as_array().unwrap()[1..].iter().all(|r| r["value"] == 15));
+    }
+    #[test]
+    fn paper_attributes_use_full_text_fields_weighted_by_progress() {
+        let books = vec![
+            json!({"id":"a","kind":"paper","topic":"Computer Science","topic_signals":"{\"Computer Science/Machine Learning\":60,\"Computer Science/Natural Language Processing\":40}"}),
+            json!({"id":"b","kind":"paper","topic":"Mathematics","topic_signals":"{\"Mathematics/Analysis\":100}","uploader_reader_id":"me"}),
+            json!({"id":"c","kind":"paper","topic":"Physics","topic_signals":"{\"Physics/Quantum Physics\":100}"}),
+        ];
+        // a finished, b is my unshelved upload, c is someone else's paper I never shelved.
+        let library = vec![json!({"book_id":"a","status":"read"})];
+        let result = paper_attributes(&library, &books, "me");
+        let labels: Vec<&str> = result.as_array().unwrap().iter().map(|r| r["label"].as_str().unwrap()).collect();
+        assert_eq!(labels, ["Machine Learning", "Natural Language Processing", "Analysis"]);
+        assert_eq!(result[0]["domain"], "Computer Science");
+        assert_eq!(result[0]["value"], 99);
+        assert_eq!(result[0]["kind"], "field");
+    }
+    #[test]
+    fn search_queries_drop_stopwords_and_prefix_only_longer_words() {
+        assert_eq!(fts_query("Klara and the Sun").as_deref(), Some("\"klara\" \"sun\"*"));
+        assert_eq!(fts_query("The Dark Forest").as_deref(), Some("\"dark\" \"forest\"*"));
+        assert_eq!(fts_query("dune ha").as_deref(), Some("\"dune\" \"ha\""));
+        assert_eq!(fts_query("the"), None);
+        assert_eq!(fts_query("\"); DROP TABLE x; --").as_deref(), Some("\"drop\" \"table\" \"x\""));
+        assert_eq!(clean_author("by Cixin Liu ; translated by Ken Liu."), "Cixin Liu");
     }
     #[test]
     fn attributes_ignore_wishlist_and_cap_scores() {

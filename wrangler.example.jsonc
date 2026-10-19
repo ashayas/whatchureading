@@ -20,6 +20,11 @@
       "database_name": "whatchureading-db",
       "database_id": "YOUR_D1_DATABASE_ID",
       "migrations_dir": "migrations"
+    },
+    {
+      "binding": "OPENLIBRARY",
+      "database_name": "whatchureading-openlibrary",
+      "database_id": "YOUR_OPENLIBRARY_D1_DATABASE_ID"
     }
   ],
   "r2_buckets": [
